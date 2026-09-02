@@ -1,277 +1,386 @@
 # Sarjy — Technical Design
 
-| |                                                                                     |
-|---|-------------------------------------------------------------------------------------|
-| Owner | aseedusmani@gmail.com                                                               |
-| Updated | 2026-09-01                                                                          |
-| Related | [PRD](PRD.md) · [Bonus: agentic banking assistant](../bonus_assignment/docs/TDD.md) |
+Owner: aseedusmani@gamorite.com · Updated 2026-09-01 · [PRD](PRD.md) ·
+[Bonus design](../bonus_assignment/docs/TDD.md)
 
-## 1. Architecture
+> Written to be explicit enough for AI-assisted implementation. Unknowns are
+> marked `TODO(...)` rather than filled with plausible placeholders.
 
-One FastAPI process on Render serving static HTML from the same origin — no
-separate frontend deploy, no CORS. Postgres (Neon) for durable state. Groq for
-inference. Vector search in-process. Voice is the browser's Web Speech API, so
-there is no audio infrastructure.
+## 1. Framing
 
-```
-POST /chat {session_id, text}
-  [1] embed(text)              → 384-dim vector        ~8ms, not an LLM
-  [2] classify(v)              → intent                ~1ms, same vector
-  [3] extract entities         → city, day, unit       <1ms, gazetteer
-  [4] resolve "home" from facts→ canonical city
-  [5] cache lookup on key      → HIT? return           ~1ms, no model
-  [6] Open-Meteo if needed                             ~140ms
-  [7] route → SMALL | LARGE → generate                 300–700ms
-  [8] store entry + write request_log
-```
+**MVP scope.** A web service with an expensive upstream — an LLM API, slow and
+metered, on the request path — carrying traffic that is repetitive and mostly
+easy. So: cache it, route cheap work to a cheap tier, measure both.
 
-Steps 1–5 are the lookup path: ~10ms, no generation.
+The non-trivial part is the cache key: callers never phrase a request the same
+way twice, so it can't be the request text.
 
-## 2. Cost classes
+Single instance, no auth, one tool, Chrome only. Production concerns are designed
+in `bonus_assignment/`, not built here.
 
-The design rests on one asymmetry: interpreting a question is cheap, answering it
-is not. An embedding emits a vector, not tokens; one embedding serves both
-classification and cache lookup.
+## 2. Architecture
 
-| | model | params | $/turn | latency |
-|---|---|---|---|---|
-| Embedding | MiniLM-L6-v2, ONNX int8 | 22.7M | ~0, local CPU | TODO |
-| Small | llama-3.1-8b-instant | 8B | TODO | TODO |
-| Large | llama-3.3-70b-versatile | 70B | TODO | TODO |
-
-**TODO(pricing):** look up current Groq per-token rates and cite with the date
-retrieved. Confirm both model IDs are still served.
-
-**TODO(measure):** prompt composition. Log `tokens_in` / `tokens_out` on the day-1
-baseline run and record the actual split across system prompt, facts, history,
-tool output and query. Input tokens dominate cost, so this figure scales
-everything downstream.
-
-**What is safe to assert before measuring:** a cache hit consumes zero tokens,
-and the small model is materially cheaper than the large one. The size of that
-gap is the thing to verify, not assume.
-
-## 3. Intents (~25)
-
-| Group | Cacheable | Route |
-|---|---|---|
-| Lookup — current, temperature, rain, wind, humidity, sunrise, AQI | yes | SMALL |
-| Forecast — today, tomorrow, n-days | yes | SMALL |
-| Compare cities | yes | SMALL |
-| Advice — clothing, travel, activity | no | LARGE |
-| Memory — set home, set units, recall | no | SMALL |
-| Contextual follow-ups | no | LARGE |
-| Chat — greeting, thanks, out-of-scope | yes | SMALL |
-
-Classification is kNN against a labelled intent index. No model call.
-
-Advice is uncacheable: the answer depends on live conditions, so the tool result
-changes underneath an identical question.
-
-## 4. Cache
-
-### 4.1 Entities go in the key, not the vector
-
-`"weather in Delhi"` vs `"weather in Mumbai"`: cosine ≈**0.96**. Same question
-shape, different answers. **No threshold separates them** — they really are
-semantically near-identical. Embeddings capture topic well and specifics badly.
-
-So specifics move into the key:
+One Python service, one container, static client served from the same origin.
 
 ```
-key = f"{intent}|{sorted(params)}"
-
-"weather in Delhi"     → current_weather|city=delhi
-"how's Delhi looking"  → current_weather|city=delhi     ← same key, can hit
-"weather in Mumbai"    → current_weather|city=mumbai    ← separate namespace
+browser ──► FastAPI ──► in-process vector index (~3MB)
+                    ├─► Postgres (Neon)
+                    └─► Groq · Open-Meteo
 ```
 
-Vector similarity then only resolves *phrasing* within a fixed parameter set,
-which is what it's good at. Entity collision is prevented structurally.
+| Component | Responsibility |
+|---|---|
+| Pipeline | Orders the stages of a request; timeouts and fallbacks |
+| Classifier | External dependency behind an interface (§4) |
+| Cache | Key construction, lookup, expiry |
+| Router | Picks the model tier on a miss |
+| Log | One row per request; the source of every published number |
 
-**This is the central design finding.** A vector-only cache is unsafe here, and
-tuning cannot fix it.
+## 3. API
 
-### 4.2 Personalisation resolves to canonical params
+No auth — public demo. `session_id` is a client-generated string, not an identity.
 
-"Weather at home" is not a per-user entry. Home city is resolved from `facts`
-*before* the key is built:
+```jsonc
+POST /chat
+  → {"session_id": "a7f3c21e", "text": "weather in Delhi"}   // text ≤ 500 chars
+  ← {"answer": "...", "intent": "current_weather", "params": {"city": "delhi"},
+     "cached": true, "route": null, "latency_ms": 12, "trace_id": "01J8X4"}
 
+GET  /health   → {"ok": true, "mode": "full", "cache_entries": 412}
+GET  /metrics  → counters from request_log: hit rate, routes, latency, tokens
+POST /admin/flush → {"evicted": 412}
 ```
-"weather at home" + facts{home_city: Bengaluru} → current_weather|city=bengaluru
-```
 
-Shareable with every user asking about Bengaluru — per-user misses become global
-hits.
+`cached: true` implies `route: null`. Errors return
+`{"error": {"code", "message", "trace_id"}}` — `invalid_request` (400),
+`upstream_timeout` (503), `tool_unavailable` (503). **No error path invents an
+answer.**
 
-This does **not** transfer to banking: a balance is irreducibly per-customer, so
-the key must carry the customer and entries can never be shared. See the bonus
-TDD.
+`X-Sarjy-Mode: baseline | router | full` overrides the default per request, so
+A/B runs need no redeploy.
 
-### 4.3 Freshness — owned by the tool
+## 4. The classifier is a dependency
 
-| Group | TTL | Why |
-|---|---|---|
-| Current conditions | 10 min | Open-Meteo refreshes ~15 min |
-| Forecast | 60 min | Model runs hourly |
-| Chat | 24 h | Static |
-
-`weather.freshness_seconds` is declared next to the fetcher; the cache asks. The
-banking equivalent is event-driven invalidation, which needs the same interface.
-
-### 4.4 Storage
-
-In-process numpy, persisted to Postgres.
+Understanding a request is an AI/DS concern. This service depends on a contract,
+not an implementation. A rule-based version ships as a stand-in.
 
 ```python
-def search(self, v, key):
-    idx = self.by_key.get(key)               # exact key filter FIRST
-    if not idx: return None
-    sims = self.vecs[idx] @ v                # normalised → dot == cosine
-    best = int(np.argmax(sims))
-    return idx[best] if sims[best] >= THRESHOLD else None
+@dataclass(frozen=True)
+class Classification:
+    intent: str
+    params: dict[str, str]      # {"city": "delhi"}
+    confidence: float
+    model_version: str
 ```
+
+Contract terms the backend owns: p99 ≤ 20ms (it sits inside the fast path),
+deterministic within a version (keys must be stable), and a version that changes
+on any behaviour change.
+
+**Degradation.** Classifier down, confidence below floor, or params unresolved →
+treat as uncacheable and route to the large tier. Always fail toward *expensive
+but correct*, never toward a guessed cache namespace.
+
+**Versioning — the backend's problem.** `classifier_version` is part of the cache
+key, so a deploy writes into a fresh namespace instead of serving entries under
+semantics that no longer hold. Stored vectors are only comparable within one
+embedding model, so `embedding_version` mismatch is a miss, not a comparison.
+
+## 5. Intent registry
+
+The classifier maps text to an intent name (§4). **What the system does with that
+name is backend configuration**, declared here and owned by this service. The
+classifier does not decide routing, cacheability or TTL; it decides only which
+label applies.
+
+```python
+@dataclass(frozen=True)
+class IntentSpec:
+    name: str
+    params: tuple[str, ...]        # required for a valid cache key
+    cacheable: bool
+    ttl_group: str                 # current | forecast | static
+    tier: Literal["small", "large"]
+    needs_tool: bool
+```
+
+| Intent | Params | Cache | TTL | Tier |
+|---|---|---|---|---|
+| `current_weather` | city | ✓ | current | small |
+| `temperature` | city | ✓ | current | small |
+| `rain_now` | city | ✓ | current | small |
+| `wind` | city | ✓ | current | small |
+| `humidity` | city | ✓ | current | small |
+| `sunrise_sunset` | city | ✓ | current | small |
+| `air_quality` | city | ✓ | current | small |
+| `forecast_today` | city | ✓ | forecast | small |
+| `forecast_tomorrow` | city | ✓ | forecast | small |
+| `forecast_days` | city, days | ✓ | forecast | small |
+| `rain_forecast` | city, day | ✓ | forecast | small |
+| `temp_range` | city, day | ✓ | forecast | small |
+| `compare_cities` | city_a, city_b | ✓ | current | small |
+| `clothing_advice` | city | ✗ | — | large |
+| `travel_advice` | city, day | ✗ | — | large |
+| `activity_advice` | city, activity | ✗ | — | large |
+| `set_home_city` | city | ✗ | — | small |
+| `set_units` | unit | ✗ | — | small |
+| `recall_fact` | key | ✗ | — | small |
+| `weather_at_home` | — | ✓* | current | small |
+| `follow_up` | — | ✗ | — | large |
+| `greeting` | — | ✓ | static | small |
+| `thanks` | — | ✓ | static | small |
+| `out_of_scope` | — | ✓ | static | small |
+| `unknown` | — | ✗ | — | large |
+
+`weather_at_home` resolves to `current_weather|city=<stored>` before key
+construction, so it shares entries with everyone else asking about that city.
+
+**Advice intents are uncacheable** because the answer depends on live conditions:
+the tool result changes underneath an identical question, so a cached reply would
+be confidently out of date.
+
+**A request whose required params don't resolve is uncacheable**, never cached
+under a partial key (§4.2).
+
+## 6. Request pipeline
+
+```
+1 classify        → intent, params, confidence, version    external (§4)
+2 gate            → low confidence / unresolved → uncacheable
+3 resolve         → "home" → stored city
+4 key             → f"{version}|{intent}|{params}"
+5 cache lookup    → hit? return                            local, ~1ms
+6 tool fetch      → Open-Meteo (declares its own freshness)
+7 route + call    → small | large
+8 write entry, log row, respond
+```
+
+Steps 1–5 are local: no network egress.
+
+### 6.1 Latency budget
+
+G4 targets a 25% p50 reduction, so the budget is allocated rather than hoped for.
+
+| Stage | Budget | Owner |
+|---|---|---|
+| Classify | ≤20ms | Contract term (§4) |
+| Cache lookup | ≤5ms | Ours — in-process scan |
+| Tool fetch | ≤200ms | Open-Meteo; skipped on a cache hit, and geocoding is memoised |
+| Model call | TODO(measure) | Upstream; observed, not controlled |
+| Serialise + transport | ≤20ms | Ours |
+
+**Where the reduction comes from.** A cache hit skips the tool call *and* the
+model call, so it costs roughly the local path alone — the difference between a
+hit and a miss is most of the request. Routing contributes separately, since the
+small tier returns faster than the large one.
+
+Both effects are mix-dependent: p50 improves only if enough traffic hits. That is
+the same uncertainty as G1 and is measured, not assumed.
+
+**TODO(measure):** per-stage p50 and p95 from `request_log` on the day-1 baseline,
+and again in full mode. Upstream model latency is an observed property of a
+dependency — recorded, not budgeted.
+
+## 7. Frontend
+
+One HTML file, vanilla JS, no build step. Browser `SpeechRecognition` in,
+`speechSynthesis` out. A text input stays as a permanent fallback so a microphone
+failure never blocks a demo. A small panel shows intent, cache hit/miss, route
+and latency — free, since `/chat` already returns them.
+
+## 8. Memory
+
+The brief requires facts to survive across sessions. This is a write path and a
+read path — no inference on our side.
+
+**Writing.** The classifier returns `set_home_city` or `set_units` with the
+parameter already extracted. The backend upserts:
+
+```
+intent=set_home_city, params={city: "delhi"}
+  → UPSERT facts (session_id, 'home_city', 'delhi')
+  → confirm: "Got it, I'll remember Delhi."
+```
+
+Recognising that an utterance states a preference is the classifier's job.
+Persisting it is ours. There is no separate extraction step and no model call on
+the write path.
+
+**Reading.** Facts are loaded once per request into a dict, used for two things:
+
+1. **Parameter resolution** — `weather_at_home` becomes `city=delhi` before the
+   cache key is built, so personalisation resolves to a shareable entry (§5).
+2. **Prompt context** — units and home city are injected so answers respect them.
+
+**Conflict.** Last write wins, by primary key. A stored fact is a current
+preference, not a history. Superseding versions with validity intervals is a real
+design, and out of scope here — noted in `bonus_assignment/`.
+
+**Scope.** `session_id` comes from browser `localStorage`. Clearing site data
+loses the facts. There are no accounts (§3), so this is memory-per-browser, not
+memory-per-person, and the demo says so rather than implying otherwise.
+
+## 9. Storage
 
 ```sql
-CREATE TABLE cache_entries (
+CREATE TABLE facts (                    -- cross-session memory
+  session_id TEXT, key TEXT, value TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (session_id, key));
+
+CREATE TABLE cache_entries (            -- derived; safe to truncate
   id BIGSERIAL PRIMARY KEY,
-  cache_key  TEXT NOT NULL,
-  question   TEXT NOT NULL,
-  answer     TEXT NOT NULL,
-  embedding  BYTEA NOT NULL,           -- float32[384]
-  hits       INT NOT NULL DEFAULT 0,
-  expires_at TIMESTAMPTZ NOT NULL
-);
+  cache_key         TEXT NOT NULL,      -- "{classifier_version}|{intent}|{params}"
+  question          TEXT NOT NULL,
+  answer            TEXT NOT NULL,
+  embedding         BYTEA NOT NULL,     -- float32[384], normalised
+  embedding_version TEXT NOT NULL,
+  hits              INT  NOT NULL DEFAULT 0,
+  expires_at        TIMESTAMPTZ NOT NULL);
 CREATE INDEX ON cache_entries (cache_key, expires_at);
+
+CREATE TABLE request_log (              -- every published number comes from here
+  id BIGSERIAL PRIMARY KEY, trace_id TEXT, mode TEXT NOT NULL,
+  intent TEXT, confidence REAL,
+  cacheable BOOLEAN NOT NULL, cached BOOLEAN NOT NULL, similarity REAL,
+  route TEXT, tokens_in INT, tokens_out INT, latency_ms INT, error_code TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 ```
 
-At n<2,000 a numpy scan is <1ms — faster than a network hop. pgvector + HNSW is
-the production path, stated not built.
+`similarity` is logged so the threshold sweep replays from the log instead of
+re-running the workload. `cacheable` separates "chose not to cache" from "missed".
 
-### 4.5 Limits
+Schema applied at boot with `CREATE TABLE IF NOT EXISTS`. No migration tool —
+stated as a gap.
 
-Contextual turns ("what about tomorrow?") carry no context in their embedding, so
-they bypass the cache. Hit rate is therefore reported **as a fraction of
-context-free traffic**, with that share measured separately. Reporting against
-total traffic would overstate the ceiling.
+## 10. The cache
 
-## 5. Router
+### 10.1 Key construction — the core problem
 
-Reuses the intent from §3 — no extra classification cost.
+A cache key must encode the **identity** of a request, not its surface form.
 
-No escalation path. An escalated turn pays for both models, so it is only
-cost-negative when escalation is very frequent:
+Two requests with different parameters have different answers by definition —
+`city=delhi` and `city=mumbai` are not the same request however similar their
+wording. Keying on text similarity alone makes that distinction depend on a
+tunable threshold and on an embedding model owned by another team, which can be
+retrained or replaced without notice. Cache correctness must not be contingent on
+either.
 
-```
-break-even:  small_cost + e · large_cost = large_cost
-             e = 1 − small_cost/large_cost
-```
-
-Given a large price gap between tiers, `e` is high — meaning escalation is
-bounded by latency and classifier health, not by cost. **TODO(compute):** the
-actual break-even once rates are confirmed. Dropped for build budget regardless;
-first thing to add back.
-
-## 6. Cost model
-
-**Not yet computed. Every figure below is a measurement to take, not a result.**
-
-Cost per turn by path:
-
-| Path | $/turn | $/1,000 |
-|---|---|---|
-| LARGE (baseline) | TODO | TODO |
-| SMALL | TODO | TODO |
-| Cache hit | 0 | 0 |
-
-**Scope:** this models *LLM cost only*. Hosting, Postgres and the embedding
-model's CPU time are excluded. They are fixed rather than per-turn, but the
-headline figure should be labelled "LLM cost per turn" and not "cost per turn".
-
-### Method
-
-1. Day 1 — run the baseline (`MODE=baseline`) over the workload. Record measured
-   `tokens_in`/`tokens_out` per turn and compute baseline cost from published
-   rates.
-2. Day 2 — run `MODE=router`, then `MODE=full`. Record the routing split, the
-   context-free share and the cache hit rate as **measured** values.
-3. Compute the reduction from the measured numbers only.
+So identifying parameters go in the key, and similarity is used only for the job
+it suits: matching different phrasings of the *same* request.
 
 ```
-cost_per_turn = (1 − hit_rate) · (small_share · small_cost + large_share · large_cost)
+"weather in Delhi"    → v3|current_weather|city=delhi
+"how's Delhi looking" → v3|current_weather|city=delhi   ← same key, can hit
+"weather in Mumbai"   → v3|current_weather|city=mumbai  ← separate namespace
 ```
 
-**TODO(measure):** `hit_rate`, `small_share`, `large_share`, `context_free_share`.
-All four were assumed in an earlier draft and are now deliberately unset — the
-whole point of the evaluation is to produce them.
+Exact key match first, similarity second, and only within one namespace. Requests
+with different parameters cannot collide regardless of how the embedding model
+behaves.
 
-### Why the result is expected to hold anyway
+This is a cache-design decision, not a model one. It is stated here because the
+obvious implementation — embed the text, search everything, threshold the score —
+is unsafe in a way that is not visible until it returns the wrong city.
 
-The cache hit rate is the most uncertain term, and it is also the term the goal
-least depends on. Routing alone — sending lookups to the small model and
-reasoning to the large one — captures most of the available saving, because the
-price gap between model tiers is large and most traffic is lookups. The cache is
-upside on top.
+### 10.2 Lookup and expiry
 
-**TODO(validate):** once rates are confirmed, compute the routing-only reduction
-and check it against G1. If routing alone clears the goal, the cache is
-de-risked; if it does not, G1 needs resetting against measured data.
+```python
+idx = by_key.get(key)                    # namespace filter first
+sims = vecs[idx] @ vec                   # normalised → dot == cosine
+return idx[argmax] if max(sims) >= THRESHOLD else None
+```
 
-## 7. Evaluation
+In-process numpy, loaded from Postgres at boot. At n<2k a scan is sub-millisecond
+and **exact** — which matters, because an approximate index would confound a
+false-hit measurement.
 
-### 7.1 Workload generator — built first
+Freshness is declared by the tool that owns the data (current conditions 10 min,
+forecast 60 min), not by the cache.
 
-≥400 turns with ground truth; nothing in PRD §6 is computable without it.
+Follow-ups ("what about tomorrow?") carry no context in their text, so they
+bypass the cache. Hit rate is therefore reported **against context-free traffic**,
+with that share measured separately.
 
-- Zipf(α≈1.1) over 25 intents, city distribution skewed to metros
-- 3–6 paraphrases per (intent, entity), including code-switched Hinglish
-- Mix: 55% lookup/forecast, 15% advice, 15% contextual, 10% memory, 5% chat
-- **Adversarial pairs:** one entity differing — Delhi/Mumbai, today/tomorrow, °C/°F
-- Each turn labelled `(intent, params, expected_answer_key)`
+## 11. Routing
 
-A **false hit** is a returned entry whose `expected_answer_key` differs from the
-query's. Hand-check 30 labels before trusting any safety number.
-
-### 7.2 Threshold sweep
-
-`t` ∈ [0.70, 0.99] step 0.01. Record hit rate and false-hit rate. Ship the lowest
-`t` holding false-hit <1%.
-
-### 7.3 Gates
-
-| Test | Assertion |
+| Intents | Tier |
 |---|---|
-| Entity isolation | `city=mumbai` never returns a `city=delhi` entry, **at threshold 0.0** |
-| Advice non-caching | No entry written for advice or contextual intents |
-| Freshness | After `expires_at`, identical query MISSes |
-| Baseline parity | `MODE=baseline` bypasses cache and router |
+| Lookup, forecast, compare, memory, chat | small |
+| Advice, contextual follow-ups | large |
 
-Threshold-0.0 is the important one: it proves entity separation is structural,
-not tuned.
+The classifier already produced the intent, so routing costs nothing extra. No
+escalation path in this build — an escalated request pays both tiers and is only
+net-negative when escalation is frequent (`e = 1 − small/large`).
+**TODO(compute)** once rates are confirmed.
 
-## 8. Failure modes
+## 12. Measurement
 
-| Mode | Mitigation | Residual |
-|---|---|---|
-| Entity collision | Entity in key; tested at t=0 | Gazetteer miss |
-| Gazetteer miss | **Fail closed** — mark uncacheable rather than cache on a partial key | — |
-| Stale data | Tool-declared TTL | No event invalidation |
-| Cache poisoning | TTL + flush | **Unmitigated — no answer validation** |
-| Embedding OOM on 512MB | int8 ONNX ~23MB; validated day 1 | — |
+Every published number comes from `request_log`.
 
-## 9. Alternatives considered
+**Workload** (built first — nothing is measurable without it): ≥400 requests over
+~25 intents, Zipf-distributed, 3–6 phrasings each, plus adversarial pairs
+differing in one parameter (Delhi/Mumbai, today/tomorrow). Each labelled
+`(intent, params, expected_answer_key)`. A **false hit** is a returned entry whose
+`expected_answer_key` differs. Hand-check 30 labels first.
+
+**Tool responses are recorded and replayed.** Baseline and treatment runs happen
+at different times, and the weather changes between them. Comparing answers across
+runs would then be measuring the atmosphere as much as the pipeline.
+
+So the baseline run writes every Open-Meteo response to a fixture file keyed by
+`(intent, params)`, and later runs read from the fixture instead of the live API.
+The upstream is pinned; only our code varies. The live path stays in use for the
+demo — this applies to evaluation runs only, via `TOOL_SOURCE=fixture|live`.
+
+Without this, G2 is not measurable.
+
+**Threshold sweep:** replay at `t` ∈ [0.70, 0.99]; plot hit rate and false-hit
+rate; ship the lowest `t` holding false-hit <1%. Replayed from `request_log`
+similarities, so a sweep costs no upstream calls.
+
+| Gate | Assertion |
+|---|---|
+| Namespace isolation | `city=mumbai` never returns a `city=delhi` entry, **at threshold 0.0** |
+| Non-caching | No entry written for advice or contextual intents |
+| Mode parity | `mode=baseline` bypasses cache and router |
+
+Threshold-0.0 matters most: it proves separation is structural, not tuned.
+
+**Quality:** the upstream is non-deterministic, so 50 sampled responses are scored
+against baseline. Regression testing for a non-deterministic dependency.
+
+**TODO(pricing):** current Groq rates, cited with a date. **TODO(measure):**
+prompt size, hit rate, routing split, context-free share. All were assumed in an
+earlier draft and are deliberately unset.
+
+## 13. Deployment
+
+One container on Render, Postgres on Neon, regions matched and close to where the
+demo is given. Config is environment variables — API keys, `MODE`, `SIMILARITY_THRESHOLD`,
+`CONFIDENCE_FLOOR`, `TOOL_SOURCE`, model ids — so the sweep's output applies
+without a code change. Embedding model baked in at build time, not
+fetched at boot.
+
+**Single instance, deliberately.** Two replicas would hold two independent
+caches: hit rate halves and the same question resolves differently depending on
+which one answers. For a service whose output is a measured hit rate, that makes
+the measurement meaningless. Scaling out requires a shared index first.
+
+Free tier sleeps after ~15 min and takes 30–60s to wake, so keep-warm ping
+`/health`, and open the URL an hour before the presentation.
+
+**Deploy an empty service on day 1**, before any features, so deployment problems
+and application bugs never arrive together.
+
+## 14. Alternatives considered
 
 | Alternative | Rejected because |
 |---|---|
-| Exact-match cache | ASR surface variance drives hit rate to ~0 |
-| Vector-only key | Delhi/Mumbai cosine ≈0.96 — unseparable. The central finding |
-| LLM-based classification | A model call to avoid a model call inverts the economics |
-| Provider prompt caching only | Complementary — the system prompt is a fixed, repeated prefix — but it discounts input tokens only and does not eliminate generation. Layer it, don't substitute. TODO: measure the prefix share of total input |
-| pgvector + HNSW | Right at scale; needless network hop at n<2k |
-| MCP tool layer | One tool doesn't justify a protocol. See bonus TDD |
-
-## 10. Rollout
-
-`MODE ∈ {baseline, router, full}`, runtime-selectable. Day 1 ships `baseline` to
-get measured reference numbers on the deployed URL. Day 2 enables `router`, then
-`full`. All three stay selectable so every comparison is same-code.
+| Exact-match cache on text | Speech input varies constantly; hit rate ≈0 |
+| Similarity-only key | Makes correctness depend on a threshold and on a model owned by another team. Different parameters must not be separable by tuning — they must be unable to collide |
+| LLM call to classify | Paying the expensive dependency to decide whether to skip it |
+| Provider prompt caching alone | Complementary — discounts repeated input, doesn't remove the call |
+| pgvector + HNSW | Right at scale. Here it adds a network hop that dwarfs a 0.2ms scan, and is approximate where the measurement needs exact |
+| Owning the classifier | An AI/DS artefact. This service owns the contract, not the model |
+| Separate frontend deploy | Two artefacts, CORS, and a build toolchain for one HTML file |
