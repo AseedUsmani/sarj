@@ -11,6 +11,12 @@ that is a reportable incident rather than a wrong temperature.
 It exists to show where the architecture goes, not to pad the build. Nothing here
 was implemented, and the documents say so throughout.
 
+Like the main assignment, this is a systems design rather than an AI one: service
+orchestration, a tool gateway, entitlement enforcement, cache invalidation,
+tenancy boundaries and failure containment. The models are upstream dependencies
+that the architecture is built to constrain — most of the design is about what
+they are *not* allowed to do.
+
 - [PRD](docs/PRD.md) — product shape, constraints, economics
 - [TDD](docs/TDD.md) — architecture, agent loop, caching under entitlements
 
@@ -24,4 +30,4 @@ was implemented, and the documents say so throughout.
 | Personalisation | Resolves to a canonical city | Irreducibly per-customer — cannot be shared |
 | Freshness | 10-minute TTL | Event-driven invalidation off core banking |
 | Wrong answer | Wrong temperature | Reportable data incident |
-| Actions | None | Money movement — must never be model-decided |
+| Actions | None | **None** — read-only by construction; state changes hand off |
