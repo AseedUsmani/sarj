@@ -1,123 +1,126 @@
 # Sarjy — Product Requirements
 
-| | |
-|---|---|
-| Owner | support@gamorite.com |
-| Status | Approved for build |
-| Updated | 2026-09-01 |
-| Related | [TDD](TDD.md) · [Bonus: agentic banking assistant](../bonus_assignment/docs/PRD.md) |
+Owner: support@gamorite.com · Updated 2026-09-01 · [TDD](TDD.md) ·
+[Bonus design](../bonus_assignment/docs/PRD.md)
 
 ## 1. What
 
-Sarjy: a voice assistant for weather. Talk to it, it answers out loud, remembers
-your home city and unit preference, and reads live data from Open-Meteo.
+**An MVP.** A voice assistant for weather: browser client, Python service, two
+upstream APIs. Talk to it, it answers out loud, remembers your home city and
+units, reads live data from Open-Meteo.
 
-## 2. Deep dive: cost per conversation
+Built to demonstrate one idea end to end and measure it. Single instance, no
+auth, Chrome only, one tool. Production concerns are named in §4 and designed —
+not built — in `bonus_assignment/`.
 
-Voice AI is priced per conversation; margin is `price − (ASR + LLM + TTS)`. Every
-turn today costs the same regardless of difficulty — "temperature in Delhi" bills
-like "should I move my flight because of the storm."
+## 2. Deep dive: caching and routing an expensive upstream
 
-Two mechanisms, measured against an all-large-model baseline:
+An LLM API is a slow, metered dependency on the request path, and traffic to it is
+repetitive and mostly easy. So: cache it, and route cheap work to a cheap tier.
+Measured against an all-large-model baseline.
 
-1. **Model routing.** Lookups go to a small model, reasoning to a large one.
-2. **Semantic cache.** Repeated questions, asked differently, skip the model.
+The hard part is the cache key. Callers never phrase a request the same way
+twice, so the key can't be the text — but text similarity alone is unsafe, because
+"weather in Delhi" and "weather in Mumbai" are different requests that happen to
+be worded almost identically. Correctness can't depend on a similarity threshold.
 
-Weather is the build domain because Open-Meteo is live, free and keyless, so
-every number is measured against real data rather than a simulation. It also
-keeps the two hard caching problems: parameterised entities (Delhi vs Mumbai) and
-real freshness limits.
+~70% service and orchestration, 20% measurement, 10% frontend. No model training
+or prompt research.
+
+Open-Meteo is live, free and keyless, so the numbers come from a real upstream
+rather than a simulation, and it keeps both hard cache problems — parameterised
+keys and real freshness windows.
 
 ## 3. Goals
 
 | # | Goal | Metric |
 |---|---|---|
-| G1 | Cut LLM cost per conversation | ≥60% vs baseline *(provisional — revisit after day-1 baseline)* |
-| G2 | Don't lose quality | ≥95% of baseline, judge-scored |
+| G1 | Cut LLM cost per conversation | ≥60% vs baseline *(provisional until day-1 baseline)* |
+| G2 | Don't lose quality | ≥95% of baseline, judge-scored, n=50 |
 | G3 | Bound cache error | False-hit rate <1% |
-| G4 | Cut median latency | p50 −25% |
+| G4 | Cut median latency | p50 −25%, against a per-stage budget |
 
 G3 gates G1. A cost win with an unmeasured error rate isn't a result.
 
 ## 4. Non-goals
 
-Auth, multi-user, PII handling, audit trails, retries, telephony, non-English,
-non-Chrome. Three part-time days.
+Auth, multi-user, PII, audit trails, retries, telephony, non-English, non-Chrome,
+horizontal scaling, migrations, staging. An MVP in three part-time days.
 
 ## 5. Requirements
 
 | ID | Requirement | Priority |
 |---|---|---|
 | R1 | Voice in, spoken out, in-browser | P0 |
-| R2 | Facts persist across sessions (home city, units) | P0 |
+| R2 | Facts persist across sessions (home city, units), with a stated conflict rule | P0 |
 | R3 | Live Open-Meteo data | P0 |
 | R4 | Deployed, publicly reachable | P0 |
-| R5 | Model router: small vs large | P0 |
-| R6 | Semantic cache with entity-aware keys | P0 |
+| R5 | Router: small vs large tier | P0 |
+| R6 | Semantic cache with parameterised keys | P0 |
 | R7 | Baseline mode selectable at runtime | P0 |
-| R8 | Per-turn log: route, tokens, latency, cache outcome | P0 |
+| R8 | Per-request log: route, tokens, latency, cache outcome | P0 |
 | R9 | Threshold sweep: hit-rate and false-hit curves | P0 |
-| R10 | Cache flush endpoint | P1 |
-| R11 | Barge-in | P2 |
+| R10 | Recorded tool fixtures, so evaluation runs are not confounded by live weather | P0 |
+| R11 | Cache flush endpoint | P1 |
+| R12 | Barge-in | P2 |
 
 R7 exists because the cost claim is meaningless without a same-code comparison.
 
 ## 6. Success metrics
 
-Over a generated workload of ≥400 turns across ~25 intents.
+Over a generated workload of ≥400 requests across ~25 intents.
 
 | Metric | Baseline | Target |
 |---|---|---|
-| LLM cost per 1,000 turns | TODO (day 1) | TODO — set as % of baseline |
+| LLM cost per 1,000 requests | TODO (day 1) | TODO — as % of baseline |
 | Judge quality (n=50) | 1.00 ref | ≥0.95 |
 | False-hit rate | — | <1% |
-| Hit rate (of addressable) | 0% | TODO — set after context-free share is known |
-| Context-free share | — | measured, not targeted |
+| Hit rate (of addressable) | 0% | TODO — after context-free share is known |
 | p50 latency | TODO (day 1) | −25% |
 
-**Absolute cost targets are deliberately unset.** An earlier draft carried
-projected dollar figures built on assumed prompt sizes, assumed hit rates and
-unverified token pricing. They have been removed rather than dressed up: the
-baseline is measured on day 1, and targets are expressed as a percentage of it.
+Absolute targets are unset until the day-1 baseline. Cost means **LLM cost only**
+— hosting and database are fixed, not per-request.
 
-Cost here means **LLM cost only** — hosting, database and embedding CPU are
-excluded and are fixed rather than per-turn.
+**Risk position:** hit rate is the most uncertain input and the one G1 least
+depends on. Routing alone should capture most of the saving. **TODO(validate)**
+once rates are known.
 
-**Risk position:** the cache hit rate is the most uncertain input and the one G1
-least depends on. Routing alone is expected to capture most of the available
-saving, since the price gap between model tiers is large and most traffic is
-lookups. **TODO(validate):** confirm that routing alone clears G1 once rates are
-known; if it does not, reset G1 against measured data rather than defending a
-number chosen in advance.
+## 7. Scope decisions
 
-## 7. Milestones
+| Decision | Why |
+|---|---|
+| ~25 intents | Zipf skew is realistic at 25; the taxonomy is the expensive part |
+| In-process numpy, not pgvector | <2k entries; exact search, no network hop |
+| Judge 50 sampled responses | Enough for a quality number with a declared sample |
+| No escalation path | Cost break-even is far away; the upside is latency, not money |
+| Single instance | Two replicas would split the cache and void the measurement |
+
+## 8. Milestones
 
 | Day | Exit criteria |
 |---|---|
-| 0 | Docs reviewed; repo + draft PR open; Groq key |
+| 0 | Docs reviewed; repo and draft PR open; Groq key |
 | 1 | R1–R4, R7 live on the deployed URL; baseline recorded |
 | 2 | R5, R6, R8, R9 done; sweep generated |
 | 3 | Metrics populated; findings written; deck under 5:00 |
 
-## 8. Risks
+## 9. Risks
 
 | Risk | Mitigation |
 |---|---|
 | Workload ground truth wrong → every safety number wrong | Build first; hand-check 30 labels |
 | Embedding model exceeds 512MB host | int8 ONNX (~23MB); validate day 1 |
-| Free-tier cold start (30–60s) kills the demo | Keep-warm ping; open URL 1h before |
+| Cold start (30–60s) kills the demo | Keep-warm ping; open URL an hour before |
 | Deployment eats day 1 | Deploy an empty service before any features |
 
-## 9. Bonus deliverable
+## 10. Bonus deliverable
 
-`bonus_assignment/` contains a design-only PRD and TDD for the production version
-of this idea: a multi-service agentic assistant for a bank. Not built. It exists
-to show where this architecture goes when there are twenty tools, real
-entitlements, and a false cache hit is a reportable incident rather than a wrong
-temperature.
+`bonus_assignment/` holds a design-only PRD and TDD for the production version of
+this idea: a read-only multi-service agent for a bank. Not built. It shows where
+the architecture goes with twenty tools, real entitlements, and a false cache hit
+that is a reportable incident rather than a wrong temperature.
 
-## 10. Open questions
+## 11. Open questions
 
-1. **Groq token pricing** — look up and cite with a retrieval date. Every cost
-   figure in the TDD is blocked on this.
+1. Groq token pricing — look up and cite with a date. Cost figures are blocked on it.
 2. Is context-free traffic above 60%? Below that, cache upside is capped.
