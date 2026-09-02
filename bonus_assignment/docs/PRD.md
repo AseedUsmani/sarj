@@ -6,6 +6,10 @@
 | Updated | 2026-09-01 |
 | Related | [TDD](TDD.md) · [Main assignment](../../docs/PRD.md) |
 
+> Written to be explicit enough for AI-assisted implementation: unknowns are
+> marked `TODO(...)` rather than filled with plausible placeholders. See the
+> note in the TDD.
+
 ## 1. Why this document exists
 
 The main assignment demonstrates semantic caching and model routing on a weather
@@ -36,6 +40,7 @@ But a banking assistant cannot be a single model with a prompt:
 | G1 | Deflection without human handoff | ≥60% of eligible calls |
 | G2 | Cost per handled call | TODO — as % of an all-complex-model baseline |
 | G3 | Zero cross-customer data exposure | 0 incidents; provable by construction |
+| G6 | Zero actions taken by the assistant | 0; provable by absence of write tools |
 | G4 | Auditability | 100% of turns reconstructable from logs |
 | G5 | Latency | p95 time-to-first-audio <1.5s |
 
@@ -59,21 +64,37 @@ Compliance is a first-class user. In the weather build there is no analogue.
 |---|---|---|
 | C1 | Multi-service agent loop with tool planning | P0 |
 | C2 | Entitlement check on every tool call, server-side | P0 |
-| C3 | Deterministic handlers for all state-changing intents | P0 |
+| C3 | **Read-only.** Assistant cannot perform state-changing operations; such intents are detected and handed off | P0 |
 | C4 | Per-customer cache with event-driven invalidation | P0 |
 | C5 | Model routing: base / complex / no-model | P0 |
 | C6 | Full turn audit trail: inputs, tools, authority, output | P0 |
 | C7 | Human handoff with context transfer | P1 |
 | C8 | Bounded tool allowlist per deployment, no runtime discovery | P0 |
 | C9 | PII redaction before any egress | P0 |
+| C10 | Handoff protocol with context transfer for state-changing intents | P0 |
+| C11 | Rate limits: per customer, per tool, per tenant | P0 |
+| C12 | Per-tool circuit breaking with declared degradation | P1 |
+| C13 | Tenant isolation at the deployment boundary | P0 |
+| C14 | Tiered authentication assurance (L0–L3) gating data access | P0 |
+| C15 | Step-up authentication flow, delegated to bank IAM | P0 |
+| C16 | Recording and automation disclosure, consent captured | P0 |
+| C17 | Independent kill switches: cache, model, assistant | P0 |
+| C18 | Multilingual support with per-language cache isolation | P1 |
 
-C8 is deliberately the opposite of the usual agentic pitch. See TDD §4.
+C8 is deliberately the opposite of the usual agentic pitch — see TDD §4. C10 and
+C11 exist because an agent loop retries and fans out, which is harmless against a
+weather API and dangerous against a payments system. TDD §8.
 
 ## 6. Non-goals
 
-Open-ended agentic autonomy, model-initiated actions, runtime tool discovery,
-cross-customer analytics, and answering anything requiring regulated financial
-advice.
+**Any action taken on the customer's behalf.** The assistant is strictly
+read-only: no transfers, no card blocks, no ticket creation, no profile changes.
+State-changing intents are recognised and handed to an authenticated flow or a
+human agent. This is a hard boundary, not a phase-one simplification — see
+TDD §4.1.
+
+Also out: open-ended agentic autonomy, runtime tool discovery, cross-customer
+analytics, and anything requiring regulated financial advice.
 
 ## 7. Economics
 
@@ -124,6 +145,7 @@ These, not model quality, determine whether the product ships.
 | Cached answer crosses customers | Customer identity in the cache key namespace; unreachable, not unlikely |
 | Stale balance quoted | Event-driven invalidation; TTL as backstop only |
 | Model invokes an unapproved tool | Static allowlist; no runtime discovery |
+| Model attempts an action | No write tool exists to invoke |
 | Core banking latency breaks the budget | Aggressive per-tool timeouts, degrade to handoff |
 | Hallucinated financial figure | Tool data or refusal; never model-generated numbers |
 
