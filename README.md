@@ -55,6 +55,32 @@ rather than guessing — it also happens to preserve both hard caching problems,
 parameterised keys ("Delhi" vs "Mumbai") and real freshness windows (a forecast is
 correct for minutes, not days).
 
+## A note on the documents
+
+The PRD and TDDs are deliberately over-explicit — full schemas, typed contracts,
+exact identifiers, named units, stated failure behaviour on every path. That is
+not thoroughness for its own sake. These documents are written to be handed to an
+AI coding assistant as well as read by a person, and **anything left implicit is
+where a model invents something plausible**.
+
+An unnamed column becomes a guessed column name. An unstated fallback becomes a
+confident improvisation. A missing unit becomes milliseconds when you meant
+seconds. None of these fail loudly — they produce working code that does the
+wrong thing, which is the expensive kind of wrong.
+
+Two habits follow:
+
+- **Unknowns are marked `TODO(...)` rather than filled in.** A plausible
+  placeholder is indistinguishable from a measured value once written down. Cost
+  projections in an early draft were removed for exactly this reason, once it was
+  clear they rested on assumed prompt sizes and unverified pricing.
+- **Every failure path states what happens**, not just that it is handled. "Tool
+  timeout → serve a stale entry if present, else say the service is unreachable,
+  never fabricate" leaves nothing to fill in.
+
+Tables and code blocks are load-bearing for the same reason. Prose is kept to
+where it carries a decision or a rationale a table cannot.
+
 ## Layout
 
 ```

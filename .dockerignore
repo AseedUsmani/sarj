@@ -1,0 +1,13 @@
+.git/
+.idea/
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+docs/
+bonus_assignment/
+eval/
+tests/
+fixtures/
+*.docx

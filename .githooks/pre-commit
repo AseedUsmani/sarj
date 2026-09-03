@@ -1,0 +1,20 @@
+#!/bin/sh
+# Blocks secrets from being committed. Install: git config core.hooksPath .githooks
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+
+for f in $staged; do
+  case "$f" in
+    .env|.env.*)
+      [ "$f" = ".env.example" ] && continue
+      echo "BLOCKED: $f is an environment file and must not be committed." >&2
+      exit 1 ;;
+  esac
+done
+
+# Provider key shapes, in content. .env.example holds empty assignments only.
+if git diff --cached -U0 | grep -nE '^\+.*(gsk_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})' >/dev/null; then
+  echo "BLOCKED: staged changes contain something shaped like an API key." >&2
+  echo "Remove it, or commit with --no-verify if you are certain it is not." >&2
+  exit 1
+fi
+exit 0
