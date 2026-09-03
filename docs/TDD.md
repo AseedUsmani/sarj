@@ -291,9 +291,16 @@ sims = vecs[idx] @ vec                   # normalised → dot == cosine
 return idx[argmax] if max(sims) >= THRESHOLD else None
 ```
 
-In-process numpy, loaded from Postgres at boot. At n<2k a scan is sub-millisecond
-and **exact** — which matters, because an approximate index would confound a
-false-hit measurement.
+**The table is not the cache.** The lookup is the in-process numpy index; Postgres
+is durability, read once at boot and written through on update. It is never on the
+request path.
+
+At n<2k a scan is sub-millisecond and **exact**, which matters because an
+approximate index would confound a false-hit measurement.
+
+In production the index must move out of the process — two replicas would warm
+independently — at which point pgvector or Redis holds it and the in-process array
+becomes an L1 in front of it. Additive, not a rewrite.
 
 Freshness is declared by the tool that owns the data (current conditions 10 min,
 forecast 60 min), not by the cache.
