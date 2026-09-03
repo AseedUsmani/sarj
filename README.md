@@ -104,9 +104,15 @@ throughout.
 | | |
 |---|---|
 | PRD, TDD, bonus design | done |
-| Service, cache, router | not started |
+| Service: voice, memory, weather tool | **done** — the assignment's floor |
+| Model routing (small/large tiers) | done |
+| Semantic cache | not started |
 | Deployment | not started |
 | Measurement run | not started |
+
+Measured findings so far are in [docs/FINDINGS.md](docs/FINDINGS.md), including
+two that changed the design: the model tiers are latency-indistinguishable and
+priced 2x apart rather than the ~12x assumed.
 
 ## Running it
 
