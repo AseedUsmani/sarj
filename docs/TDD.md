@@ -1,10 +1,19 @@
 # Sarjy — Technical Design
 
-Owner: aseedusmani@gmail.com · Updated 2026-09-01 · [PRD](PRD.md) ·
-[Bonus design](../bonus_assignment/docs/TDD.md)
+Owner: aseedusmani@gmail.com · Updated 2026-09-04 (start of day 2) ·
+[PRD](PRD.md) · [Bonus design](../bonus_assignment/docs/TDD.md)
 
 > Written to be explicit enough for AI-assisted implementation. Unknowns are
 > marked `TODO(...)` rather than filled with plausible placeholders.
+
+**Revision, day 2.** Day 1 produced this document, the PRD and the deep-dive
+choice. Two things settled overnight and are folded in below: the model tiers
+are priced 2× apart rather than the ~12× the original estimate assumed, which
+moves the weight of the cost argument onto the cache rather than onto routing
+(§11); and two third-party
+upstreams sit on the request path, so a retry policy is in scope rather than a
+non-goal (§6.2). Measured numbers live in [FINDINGS](FINDINGS.md); this document
+carries the design they imply.
 
 ## 1. Framing
 
@@ -181,6 +190,50 @@ the same uncertainty as G1 and is measured, not assumed.
 and again in full mode. Upstream model latency is an observed property of a
 dependency — recorded, not budgeted.
 
+### 6.2 Upstream failures and retries
+
+Two upstreams sit on the request path and neither is ours. One shared policy in
+`app/retry.py`, so behaviour cannot drift between them.
+
+**What is retried:** connection-level failures only — connect timeout, read
+timeout, dropped connection, pool timeout. The request never reached a decision,
+so repeating it is safe. Every upstream call here is a read or a stateless
+completion; anything that changed state would need an idempotency key instead
+(see `bonus_assignment/`).
+
+**What is not retried:** anything the server answered. A 400, 401 or 404 returns
+the same answer next time, and a 429 wants backoff, not another attempt.
+
+**The deadline matters more than the attempt count.** Three attempts against an
+unreachable host costs roughly 9.7s. For a voice interface that is far worse
+than failing in two and saying so, so `retry.call()` takes a `deadline_s` that
+bounds the whole sequence — checked *before each attempt*, not only before each
+sleep, because an attempt beginning at 3.1s with a 3s connect timeout blows a 5s
+budget on its own.
+
+| Upstream | Attempts | Connect | Deadline | Worst case |
+|---|---|---|---|---|
+| Groq | 3 | 10s | 8s | fail, then 503 `upstream_timeout` |
+| Open-Meteo | 2 | 2s | 5s | 4.3s, then answer without data |
+
+Backoff is 0.2s then 0.4s. Short on purpose: someone is waiting to hear an
+answer.
+
+**Failures must stay distinguishable.** A lookup can fail because the place does
+not exist or because the API could not be reached, and the two warrant different
+things being said out loud. Collapsing both into a single `None` produces *"I
+couldn't find that place"* for a network fault — a false statement that sends the
+user hunting a spelling mistake that does not exist. Transport failures raise
+`Unreachable` and produce *"I couldn't reach the weather service"*. One exception
+class, and the difference between an honest failure and a misleading one.
+
+Transport failures are also **not cached**, unlike genuine misses: caching one
+bad minute would persist it for the process lifetime.
+
+**No path invents data.** A tool failure yields a `ToolResult` with no context,
+so there is nothing for the model to work from and the honest answer is returned
+without an upstream call at all.
+
 ## 7. Frontend
 
 One HTML file, vanilla JS, no build step. Browser `SpeechRecognition` in,
@@ -291,9 +344,16 @@ sims = vecs[idx] @ vec                   # normalised → dot == cosine
 return idx[argmax] if max(sims) >= THRESHOLD else None
 ```
 
-In-process numpy, loaded from Postgres at boot. At n<2k a scan is sub-millisecond
-and **exact** — which matters, because an approximate index would confound a
-false-hit measurement.
+**The table is not the cache.** The lookup is the in-process numpy index; Postgres
+is durability, read once at boot and written through on update. It is never on the
+request path.
+
+At n<2k a scan is sub-millisecond and **exact**, which matters because an
+approximate index would confound a false-hit measurement.
+
+In production the index must move out of the process — two replicas would warm
+independently — at which point pgvector or Redis holds it and the in-process array
+becomes an L1 in front of it. Additive, not a rewrite.
 
 Freshness is declared by the tool that owns the data (current conditions 10 min,
 forecast 60 min), not by the cache.
@@ -318,11 +378,20 @@ net-negative when escalation is frequent (`e = 1 − small/large`).
 
 Every published number comes from `request_log`.
 
-**Workload** (built first — nothing is measurable without it): ≥400 requests over
-~25 intents, Zipf-distributed, 3–6 phrasings each, plus adversarial pairs
-differing in one parameter (Delhi/Mumbai, today/tomorrow). Each labelled
-`(intent, params, expected_answer_key)`. A **false hit** is a returned entry whose
-`expected_answer_key` differs. Hand-check 30 labels first.
+**Workload.** ~60 requests through the running service: ~25 intents with the
+popular ones repeated, plus ~10 adversarial pairs differing in a single
+parameter (Delhi/Mumbai, today/tomorrow). No separate generator — `request_log`
+records everything needed, so the workload is just a list of phrases driven
+through the app, phrased as a person would speak rather than as a test is
+written.
+
+Ground truth needs no annotation: two requests share an answer exactly when they
+share intent and params, which is already the cache key. A **false hit** is a
+returned entry whose intent and params differ from the request's.
+
+Sample size is small and stated as such. Sixty measured requests supports "the
+cache works and here is its error rate"; it does not support a confident
+second-decimal-place hit rate, and the write-up should not imply otherwise.
 
 **Tool responses are recorded and replayed.** Baseline and treatment runs happen
 at different times, and the weather changes between them. Comparing answers across
@@ -373,7 +442,98 @@ Free tier sleeps after ~15 min and takes 30–60s to wake, so keep-warm ping
 **Deploy an empty service on day 1**, before any features, so deployment problems
 and application bugs never arrive together.
 
-## 14. Alternatives considered
+## 14. Estimates and milestones
+
+Three part-time days. Day 1 is complete; day 2 is today. Day 2 carries the cache
+and the deployment so that day 3 is measurement and presentation rather than
+building — work that cannot be shown in five minutes scores nothing, and building
+late is what squeezes the showing.
+
+### Day 1 — PRD, TDD, analysis (complete)
+
+- **PRD** — problem, goals, scope, non-goals · 1h
+- **TDD** — architecture, cache design, measurement plan · 2h
+- **Deep-dive selection** — caching and routing over the four listed tracks,
+  with the reasoning recorded · 1h
+- **Bonus design** — agentic banking assistant, design only · 1.5h
+
+*Exit: deep dive chosen, with the reasons written down.*
+
+### Day 2 — MVP, cache, deployment (today)
+
+- **Service skeleton** — `/health`, Dockerfile, typed settings · 0.75h
+- **Persistence** — schema at boot, Postgres or SQLite · 0.5h
+- **LLM client and `/chat`** — error contract, mode override · 1h
+- **Voice frontend** — Web Speech in and out, text fallback · 0.75h
+- **Intent registry and rule classifier** — 23 intents · 1h
+- **Weather tool and memory** — Open-Meteo, aliases, geocode cache · 1.5h
+- **Model routing** — small and large tiers · 0.25h
+- **Retries** — one shared policy, deadline-bounded · 0.75h
+- **Deploy the working MVP** · 1h
+  - Neon database, connection string into Render
+  - Render web service from the Dockerfile, env vars
+  - keep-warm ping so a cold start never lands on a viewer
+  - deploy *before* the cache, so a deployment problem cannot arrive tangled
+    up with a cache bug
+- **Semantic cache** · 2h
+  - key construction: `classifier_version | intent | params`
+  - in-process index, loaded from Postgres at boot, written through
+  - expiry from the tool's declared freshness, not a cache constant
+  - `/admin/flush`, which the demo needs to be repeatable
+- **Wire into the pipeline** · 0.5h
+  - lookup before the tool call, store after a successful answer
+  - `cacheable=false` on low confidence and on unresolved parameters
+
+*Exit: floor deployed and reachable; cache serving hits.*
+
+### Day 3 — measurement, polish, submission (tomorrow)
+
+- **Measurement** · 0.75h — *no separate harness; `request_log` already records
+  intent, cached, route, tokens, similarity and latency on every request*
+  - ~60 requests through the deployed app: 25 intents, popular ones repeated,
+    plus ~10 adversarial pairs (Delhi/Mumbai, today/tomorrow) — the pairs are
+    the only way to measure false hits, which is the safety claim
+  - phrase them the way a person actually speaks, not the way a test is written:
+    every bug found so far came from a natural sentence
+  - a `MODE=baseline` pass over the same phrases for the comparison
+  - threshold sweep replayed from logged `similarity` values — zero extra
+    upstream calls
+  - ground truth needs no annotation: two requests share an answer exactly when
+    they share intent and params, which is already the cache key
+- **Correctness gates** · 0.25h
+  - namespace isolation asserted at threshold 0.0 — proves separation is
+    structural rather than tuned
+  - no cache entry written for advice or follow-up intents
+  - `MODE=baseline` bypasses cache and router
+- **Write-up** · 0.75h
+  - README results table, findings including what did not work
+  - state the sample size plainly; 60 measured requests beats an unmeasured claim
+- **UI polish** · 0.5h — *cut first*
+  - cache-hit indicator, latency panel
+- **Presentation** · 1.25h
+  - 5 slides, Loom recorded and shared before the meeting
+  - rehearse against a timer; they stop you 30 seconds past five
+
+*Exit: real numbers in the README, public URL works for someone else, deck under
+5:00.*
+
+### Free-tier budget
+
+Measured from live response headers, 2026-09-04: **1,000 requests per day** and
+**8,000 tokens per minute**.
+
+At ~300 tokens per request, TPM caps throughput at roughly **26 requests per
+minute** — so any measurement pass must pace itself or collect 429s instead of
+numbers.
+
+The ~60-request plan costs about 100 requests once the baseline pass is included,
+around 10% of the daily allowance. That leaves room to develop, and to re-run
+everything after fixing something. An earlier draft specified 400 requests, which
+would consume 65% of the day's budget in a single pass and leave no room to
+repeat it — a bad position to be in on submission day.
+
+
+## 15. Alternatives considered
 
 | Alternative | Rejected because |
 |---|---|

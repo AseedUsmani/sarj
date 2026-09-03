@@ -75,11 +75,15 @@ Compliance is a first-class user. In the weather build there is no analogue.
 | C11 | Rate limits: per customer, per tool, per tenant | P0 |
 | C12 | Per-tool circuit breaking with declared degradation | P1 |
 | C13 | Tenant isolation at the deployment boundary | P0 |
-| C14 | Tiered authentication assurance (L0–L3) gating data access | P0 |
+| C14 | Tiered authentication assurance (L0–L3) gating data access, established at call setup before the first turn | P0 |
 | C15 | Step-up authentication flow, delegated to bank IAM | P0 |
 | C16 | Recording and automation disclosure, consent captured | P0 |
 | C17 | Independent kill switches: cache, model, assistant | P0 |
 | C18 | Multilingual support with per-language cache isolation | P1 |
+| C19 | Entitlements fetched at call setup and enforced per tool call, never inferred from identity | P0 |
+| C20 | Generated answers verified against tool output before speaking | P0 |
+| C21 | Handoff with context transfer and enumerated reasons | P0 |
+| C22 | Staged rollout, each stage reversible by config | P1 |
 
 C8 is deliberately the opposite of the usual agentic pitch — see TDD §4. C10 and
 C11 exist because an agent loop retries and fans out, which is harmless against a

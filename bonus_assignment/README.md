@@ -24,6 +24,7 @@ they are *not* allowed to do.
 
 | | Weather (built) | Banking (designed) |
 |---|---|---|
+| **Identity** | none — no accounts | **authenticated and authorized at call setup, before any turn** |
 | Tools | 1 HTTP call | ~20 services, different owners, legacy middleware |
 | Orchestration | Fixed pipeline | Agent loop with planning over tools |
 | Cache scope | Global by city | Per-customer, entitlement-bound |

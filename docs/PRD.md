@@ -1,6 +1,6 @@
 # Sarjy — Product Requirements
 
-Owner: aseedusmani@gmail.com · Updated 2026-09-01 · [TDD](TDD.md) ·
+Owner: aseedusmani@gmail.com · Updated 2026-09-04 (start of day 2) · [TDD](TDD.md) ·
 [Bonus design](../bonus_assignment/docs/PRD.md)
 
 ## 1. What
@@ -35,7 +35,7 @@ keys and real freshness windows.
 
 | # | Goal | Metric |
 |---|---|---|
-| G1 | Cut LLM cost per conversation | ≥60% vs baseline *(provisional until day-1 baseline)* |
+| G1 | Cut LLM cost per conversation | ≥60% vs baseline — requires ~36% cache hit rate at measured rates |
 | G2 | Don't lose quality | ≥95% of baseline, judge-scored, n=50 |
 | G3 | Bound cache error | False-hit rate <1% |
 | G4 | Cut median latency | p50 −25%, against a per-stage budget |
@@ -44,8 +44,12 @@ G3 gates G1. A cost win with an unmeasured error rate isn't a result.
 
 ## 4. Non-goals
 
-Auth, multi-user, PII, audit trails, retries, telephony, non-English, non-Chrome,
+Auth, multi-user, PII, audit trails, telephony, non-English, non-Chrome,
 horizontal scaling, migrations, staging. An MVP in three part-time days.
+
+Retries *are* in scope and built (TDD §6.2) — two third-party upstreams sit on
+the request path, and a transient connection failure returning a 503 to someone
+speaking to the assistant is not an acceptable MVP.
 
 ## 5. Requirements
 
@@ -61,8 +65,9 @@ horizontal scaling, migrations, staging. An MVP in three part-time days.
 | R8 | Per-request log: route, tokens, latency, cache outcome | P0 |
 | R9 | Threshold sweep: hit-rate and false-hit curves | P0 |
 | R10 | Recorded tool fixtures, so evaluation runs are not confounded by live weather | P0 |
-| R11 | Cache flush endpoint | P1 |
-| R12 | Barge-in | P2 |
+| R11 | Bounded retries on transient upstream failures | P0 |
+| R12 | Cache flush endpoint | P1 |
+| R13 | Barge-in | P2 |
 
 R7 exists because the cost claim is meaningless without a same-code comparison.
 
@@ -81,9 +86,10 @@ Over a generated workload of ≥400 requests across ~25 intents.
 Absolute targets are unset until the day-1 baseline. Cost means **LLM cost only**
 — hosting and database are fixed, not per-request.
 
-**Risk position:** hit rate is the most uncertain input and the one G1 least
-depends on. Routing alone should capture most of the saving. **TODO(validate)**
-once rates are known.
+**Risk position — revised 2026-09-03, see [FINDINGS](FINDINGS.md).** Measured
+rates show the tier gap is 2×, not the ~12× assumed. Routing alone yields only
+37–43%, so **G1 now depends on the cache**, which needs ~36% hit rate to close the
+gap. The risk is concentrated in the cache rather than hedged away from it.
 
 ## 7. Scope decisions
 
@@ -92,17 +98,19 @@ once rates are known.
 | ~25 intents | Zipf skew is realistic at 25; the taxonomy is the expensive part |
 | In-process numpy, not pgvector | <2k entries; exact search, no network hop |
 | Judge 50 sampled responses | Enough for a quality number with a declared sample |
-| No escalation path | Cost break-even is far away; the upside is latency, not money |
+| No escalation path | Break-even is 50% escalation at measured rates, and tiers are latency-indistinguishable, so there is no latency upside either |
 | Single instance | Two replicas would split the cache and void the measurement |
 
 ## 8. Milestones
 
 | Day | Exit criteria |
 |---|---|
-| 0 | Docs reviewed; repo and draft PR open; Groq key |
-| 1 | R1–R4, R7 live on the deployed URL; baseline recorded |
-| 2 | R5, R6, R8, R9 done; sweep generated |
-| 3 | Metrics populated; findings written; deck under 5:00 |
+| 1 | PRD, TDD, deep dive chosen with reasons |
+| 2 | Floor working end to end, deployed, cache serving hits |
+| 3 | Cache measured; findings written; deck under 5:00 |
+
+Deployment and the cache sit on day 2 so day 3 is measurement and presentation
+rather than building. Cut order fixed in advance — see TDD §14.
 
 ## 9. Risks
 
