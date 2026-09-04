@@ -66,7 +66,7 @@ need no redeploy.
 ### 3. Verify
 
 ```bash
-curl -s https://<app>.onrender.com/health | python3 -m json.tool
+curl -s https://sarj-aseed.onrender.com/health | python3 -m json.tool
 ```
 
 All five components should report ok:

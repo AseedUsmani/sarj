@@ -148,7 +148,8 @@ async def handle(session_id: str, user_text: str, mode: str,
                              mode=mode, latency_ms=0)
 
     async def finish(answer: str, route: Optional[str] = None,
-                     cached: bool = False, cls=None) -> Answer:
+                     cached: bool = False, cls=None,
+                     resolved: Optional[dict] = None) -> Answer:
         # Row is written here, after route and latency are known. Writing it
         # earlier persisted nulls for exactly the columns the evaluation needs.
         row.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -159,7 +160,12 @@ async def handle(session_id: str, user_text: str, mode: str,
             answer=answer, trace_id=trace_id, route=route, cached=cached,
             latency_ms=row.latency_ms,
             intent=cls.intent if cls else None,
-            params=dict(cls.params) if cls else {},
+            # The *resolved* params, not the classifier's raw output: "should I
+            # carry an umbrella today" classifies with no city, and the city
+            # comes from memory a moment later. Reporting the raw output made it
+            # look as though the cache key had no city in it.
+            params=dict(resolved if resolved is not None
+                        else (cls.params if cls else {})),
             confidence=cls.confidence if cls else None,
         )
 
@@ -256,13 +262,14 @@ async def handle(session_id: str, user_text: str, mode: str,
         # Only in `full` mode, so baseline and router bypass it entirely and the
         # comparison stays same-code.
         if row.cacheable and mode == "full" and cache.enabled():
-            row.cache_key = cache.build_key(cls.model_version, cls.intent, params)
+            row.cache_key = cache.build_key(
+                cls.model_version, cls.intent, params, significant=spec.params)
             hit, similarity = cache.lookup(row.cache_key, user_text)
             # Recorded on a miss too: the threshold sweep replays these scores
             # instead of re-running the workload.
             row.similarity = similarity
             if hit is not None:
-                return await finish(hit.answer, cached=True, cls=cls)
+                return await finish(hit.answer, cached=True, cls=cls, resolved=params)
 
         # A horizon the tool cannot serve. Say so rather than answering for
         # today: wrong advice about next week's trip is worse than a limit.
@@ -343,7 +350,7 @@ async def handle(session_id: str, user_text: str, mode: str,
             await cache.store_answer(
                 row.cache_key, user_text, completion.text, ttl_seconds)
 
-        return await finish(completion.text, route=tier, cls=cls)
+        return await finish(completion.text, route=tier, cls=cls, resolved=params)
 
     except llm.UpstreamError as exc:
         code = "rate_limited" if exc.rate_limited else "upstream_timeout"

@@ -266,3 +266,35 @@ narrow enough job that a lexical measure does it — and it removes a ~23MB mode
 from a 512MB host. `EMBEDDING_VERSION` is stored per entry, so swapping in
 sentence embeddings empties the cache rather than comparing across
 representations.
+
+## 2026-09-04 — Baseline vs full: 82% cost reduction, 64% hit rate, zero false hits
+
+25 requests shaped like real traffic (popular questions repeated, asked
+different ways), run twice against the same build one flag apart.
+
+| | baseline | full |
+|---|---|---|
+| LLM cost / 1,000 requests | $0.0734 | $0.0131 (−82%) |
+| p50 latency | 671 ms | 5 ms (−99%) |
+| Cache hit rate | 0% | 64% |
+| False hits | — | 0 |
+| Tokens | 7,414 | 2,530 |
+
+**The 82% exceeds the ~68% that routing alone was projected to give**, because
+the cache is doing more work than the earlier arithmetic assumed — 64% hit rate
+against a projected 45%. Two reasons: making advice intents cacheable added a
+common question class, and repeated questions in a realistic workload cluster
+harder than a uniform distribution suggests.
+
+**p50 dropping to 5ms is a mix artefact and should be quoted carefully.** With
+64% of requests served from cache, the median request *is* a cache hit. The
+honest statement is "a hit is ~240× faster than a miss, and at this hit rate the
+median request is a hit" rather than "the service got 99% faster".
+
+**Zero false hits** across the run, with adversarial pairs deliberately included
+(Delhi/Mumbai, today/tomorrow, temperature/humidity). Consistent with the
+namespace isolation test passing at threshold 0.0.
+
+`TODO(measure)`: answer quality against baseline. Not yet run — the cost and
+safety numbers were the priority, and a judge pass over sampled answers is the
+remaining gap.
