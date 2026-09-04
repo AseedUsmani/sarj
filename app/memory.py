@@ -28,19 +28,24 @@ _INSERT = text(
 )
 
 
-async def load(session_id: str) -> dict[str, str]:
-    """Read once per request; retrieval is then a dict lookup, not a query."""
+async def load(owner: str) -> dict[str, str]:
+    """Read once per request; retrieval is then a dict lookup, not a query.
+
+    `owner` is a raw session id for an anonymous browser, or `user:<id>` once
+    signed in. The column is still called session_id -- renaming it would need a
+    migration and buy nothing.
+    """
     try:
         async with db.engine().connect() as conn:
-            rows = (await conn.execute(_SELECT, {"sid": session_id})).fetchall()
+            rows = (await conn.execute(_SELECT, {"sid": owner})).fetchall()
         return {r[0]: r[1] for r in rows}
     except Exception as exc:
         # Memory is an enhancement, never a reason to fail a request.
-        log.warning("fact load failed for %s: %s", session_id, exc)
+        log.warning("fact load failed for %s: %s", owner, exc)
         return {}
 
 
-async def put(session_id: str, key: str, value: str) -> bool:
+async def put(owner: str, key: str, value: str) -> bool:
     if key not in ALLOWED or not value:
         return False
     value = value.strip()[:120]
@@ -48,9 +53,9 @@ async def put(session_id: str, key: str, value: str) -> bool:
         # Delete-then-insert rather than dialect-specific upsert syntax, so the
         # same statement works on Postgres and SQLite.
         async with db.engine().begin() as conn:
-            await conn.execute(_DELETE, {"sid": session_id, "k": key})
-            await conn.execute(_INSERT, {"sid": session_id, "k": key, "v": value})
-        log.info("learned %s=%s for %s", key, value, session_id)
+            await conn.execute(_DELETE, {"sid": owner, "k": key})
+            await conn.execute(_INSERT, {"sid": owner, "k": key, "v": value})
+        log.info("learned %s=%s for %s", key, value, owner)
         return True
     except Exception as exc:
         log.warning("fact write failed: %s", exc)
@@ -75,3 +80,26 @@ def describe(facts: dict[str, str]) -> str:
     if facts.get("unit"):
         bits.append(f"you prefer {facts['unit']}")
     return "You told me " + " and ".join(bits) + "."
+
+
+async def adopt(from_owner: str, to_owner: str) -> int:
+    """Carry an anonymous session's facts onto an account at sign-in.
+
+    Existing account facts win: signing in on a new browser must not overwrite
+    what the account already knows with whatever that browser happened to pick
+    up. Returns the number of facts adopted.
+    """
+    if from_owner == to_owner:
+        return 0
+    source = await load(from_owner)
+    if not source:
+        return 0
+    existing = await load(to_owner)
+    adopted = 0
+    for key, value in source.items():
+        if key in existing:
+            continue
+        if await put(to_owner, key, value):
+            adopted += 1
+    log.info("adopted %d fact(s) %s -> %s", adopted, from_owner, to_owner)
+    return adopted

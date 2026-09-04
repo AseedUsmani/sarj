@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import cache, classifier, db, llm, pipeline
+from app import auth, cache, classifier, db, errors, llm, memory, pipeline
 from app.tools import weather
 from app.config import VALID_MODES, settings
 
@@ -100,13 +100,61 @@ async def validation_error(request: Request, exc: RequestValidationError) -> JSO
     translated into the uniform error shape (docs/TDD.md §3)."""
     first = exc.errors()[0] if exc.errors() else {}
     field = ".".join(str(p) for p in first.get("loc", ())[1:]) or "body"
+    # Field-level detail is safe here -- it describes the caller's own request,
+    # not the service's internals -- and it is what makes a 400 actionable.
+    log.info("validation failed: %s: %s", field, first.get("msg"))
     return _error(400, "invalid_request", f"{field}: {first.get('msg', 'invalid')}")
+
+
+class AuthRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=200)
+    session_id: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/auth/register")
+async def auth_register(body: AuthRequest) -> JSONResponse:
+    try:
+        user, token = await auth.register(body.email, body.password)
+    except auth.AuthError as exc:
+        return _error(400, "invalid_request", str(exc))
+    adopted = await _adopt(body.session_id, user)
+    return JSONResponse({"email": user.email, "token": token, "adopted_facts": adopted})
+
+
+@app.post("/auth/login")
+async def auth_login(body: AuthRequest) -> JSONResponse:
+    try:
+        user, token = await auth.login(body.email, body.password)
+    except auth.AuthError as exc:
+        # 401, and the same message whether the email or the password was wrong.
+        return _error(401, "invalid_request", str(exc))
+    adopted = await _adopt(body.session_id, user)
+    return JSONResponse({"email": user.email, "token": token, "adopted_facts": adopted})
+
+
+@app.get("/auth/me")
+async def auth_me(authorization: str | None = Header(default=None)) -> JSONResponse:
+    user = await auth.resolve(authorization)
+    if not user:
+        return JSONResponse({"signed_in": False})
+    return JSONResponse({"signed_in": True, "email": user.email,
+                         "facts": await memory.load(user.owner)})
+
+
+async def _adopt(session_id: str | None, user: auth.User) -> int:
+    """Signing in adopts whatever the anonymous session already taught Sarjy,
+    so the conversation continues rather than restarting."""
+    if not session_id or not SESSION_RE.match(session_id):
+        return 0
+    return await memory.adopt(session_id, user.owner)
 
 
 @app.post("/chat")
 async def chat(
     body: ChatRequest,
     x_sarjy_mode: str | None = Header(default=None, alias="X-Sarjy-Mode"),
+    authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     if not SESSION_RE.match(body.session_id):
         return _error(400, "invalid_request", "session_id must be 8-64 chars [A-Za-z0-9_-]")
@@ -124,13 +172,16 @@ async def chat(
     if mode not in VALID_MODES:
         return _error(400, "invalid_request", f"mode must be one of {list(VALID_MODES)}")
 
+    user = await auth.resolve(authorization)
     try:
-        answer = await pipeline.handle(body.session_id, text, mode)
+        answer = await pipeline.handle(
+            body.session_id, text, mode, owner=user.owner if user else None)
     except pipeline.PipelineError as exc:
-        return _error(exc.status, exc.code, str(exc), exc.trace_id)
-    except Exception as exc:  # noqa: BLE001 - last resort, never leak internals
+        # exc.detail stays in the log; the user gets the mapped message.
+        return _error(exc.status, exc.code, exc.user_message, exc.trace_id)
+    except Exception:  # noqa: BLE001 - last resort, never leak internals
         log.exception("unhandled error")
-        return _error(500, "internal", "unexpected error")
+        return _error(500, "internal", errors.message_for("internal"))
 
     return JSONResponse(answer.to_dict())
 

@@ -124,6 +124,14 @@ _NON_PLACE = {
     "month", "year", "soon", "day", "days", "morning", "afternoon", "evening",
     "night", "monday", "tuesday", "wednesday", "thursday", "friday",
     "saturday", "sunday",
+    # Common destinations. "go to the beach" must not resolve to Beach, North
+    # Dakota -- a real place, so geocoding succeeds and the answer is confidently
+    # about the wrong location. These fall back to the stored home city instead.
+    "beach", "park", "office", "work", "school", "college", "university",
+    "gym", "mall", "market", "shop", "shops", "restaurant", "cafe", "airport",
+    "station", "hospital", "hotel", "pool", "garden", "countryside",
+    "mountains", "hills", "city", "town", "village", "place", "outside",
+    "outdoors", "indoors",
     # garments: "carry winter clothes" must not yield "winter clothes"
     "winter", "summer", "warm", "cold", "clothes", "clothing", "woollens",
     "woolens", "jacket", "coat", "sweater", "umbrella", "raincoat", "shorts",

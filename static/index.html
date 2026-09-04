@@ -3,211 +3,401 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sarjy</title>
+<title>Sarjy — weather assistant</title>
 <style>
-  :root { --bg:#0f1115; --panel:#171a21; --line:#262b35; --text:#e6e8ec;
-          --muted:#8a8f98; --accent:#6fcf97; --warn:#f0a63a; }
-  * { box-sizing:border-box }
-  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif }
-  .wrap { max-width:760px; margin:0 auto; padding:32px 20px 64px }
-  header { display:flex; align-items:center; gap:14px; margin-bottom:22px }
-  h1 { font-size:20px; margin:0 }
-  .sub { color:var(--muted); font-size:13px; margin:2px 0 0 }
-  .orb { width:42px; height:42px; border-radius:50%; border:1px solid var(--line);
-         background:radial-gradient(circle at 35% 30%,#3a4152,#1b1f28); transition:.15s }
-  .orb.listening { border-color:var(--accent); box-shadow:0 0 0 6px rgba(111,207,151,.12) }
-  .orb.thinking  { border-color:var(--warn); animation:pulse 1.1s infinite }
-  .orb.speaking  { background:radial-gradient(circle at 35% 30%,#6fcf97,#2f7d55) }
-  @keyframes pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
-  button { background:#222733; color:var(--text); border:1px solid var(--line);
-           border-radius:9px; padding:10px 16px; font-size:14px; cursor:pointer }
-  button:hover:not(:disabled) { border-color:#3a4152 }
-  button:disabled { opacity:.45; cursor:not-allowed }
-  #mic.on { background:var(--accent); color:#0d1712; border-color:transparent; font-weight:600 }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px }
-  #log { padding:16px; display:flex; flex-direction:column; gap:10px;
-         min-height:220px; max-height:52vh; overflow-y:auto }
-  .turn { max-width:80%; padding:9px 13px; border-radius:12px; white-space:pre-wrap }
-  .turn.user { align-self:flex-end; background:#2b3a55; border-bottom-right-radius:4px }
-  .turn.bot  { align-self:flex-start; background:#1f242e; border-bottom-left-radius:4px }
-  .turn.err  { align-self:flex-start; background:#2a1618; color:#ffb4b4; border:1px solid #5a2a2e }
-  .turn.pending { color:var(--muted) }
-  .empty { color:var(--muted); margin:auto 0; font-size:14px }
-  form { display:flex; gap:8px; padding:12px; border-top:1px solid var(--line) }
-  input[type=text] { flex:1; background:#12151b; border:1px solid var(--line);
-                     border-radius:9px; padding:10px 12px; color:var(--text); font-size:14px }
-  input[type=text]:focus { outline:none; border-color:#3a4152 }
-  .panel { margin-top:14px; padding:14px 16px; font-size:13px }
-  .panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.07em;
-              color:var(--muted); margin:0 0 10px }
-  .kv { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:10px }
-  .k { color:var(--muted); font-size:11px }
-  .v { font-variant-numeric:tabular-nums; font-size:15px }
-  .v.hit { color:var(--accent) }
-  .note { color:var(--muted); font-size:12px; margin-top:12px }
+  :root{
+    --bg:#0b0d12; --panel:#12151c; --panel-2:#171b24; --line:#232833;
+    --text:#e8eaef; --muted:#7d8492; --accent:#5eead4; --accent-dim:#134e4a;
+    --user:#1e3a5f; --warn:#fbbf24; --err:#f87171;
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;background:radial-gradient(1200px 600px at 50% -10%,#141a26 0%,var(--bg) 55%);
+    color:var(--text);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:820px;margin:0 auto;padding:28px 18px 40px;min-height:100%;
+        display:flex;flex-direction:column;gap:14px}
+
+  /* ── header ───────────────────────────────────────────── */
+  header{display:flex;align-items:center;gap:14px}
+  .orb{width:44px;height:44px;border-radius:50%;flex:none;position:relative;
+       background:radial-gradient(circle at 34% 30%,#2b3244,#151922);
+       border:1px solid var(--line);transition:transform .15s,box-shadow .25s,border-color .25s}
+  .orb::after{content:"";position:absolute;inset:-6px;border-radius:50%;
+              border:1px solid transparent;transition:border-color .25s}
+  .orb.listening{border-color:var(--accent);
+    transform:scale(calc(1 + var(--level,0) * .3));
+    box-shadow:0 0 22px rgba(94,234,212,.28)}
+  .orb.listening::after{border-color:rgba(94,234,212,.25)}
+  .orb.thinking{border-color:var(--warn);animation:pulse 1.1s ease-in-out infinite}
+  .orb.speaking{background:radial-gradient(circle at 34% 30%,var(--accent),#0f766e);
+                box-shadow:0 0 26px rgba(94,234,212,.4)}
+  @keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
+  h1{font-size:19px;margin:0;letter-spacing:-.02em;font-weight:650}
+  .sub{margin:1px 0 0;color:var(--muted);font-size:12.5px;display:flex;align-items:center;gap:6px}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--muted);flex:none}
+  .dot.ok{background:var(--accent);box-shadow:0 0 6px var(--accent)}
+  .dot.err{background:var(--err)}
+  .spacer{flex:1}
+
+  button{font:inherit;cursor:pointer;border-radius:10px;transition:.15s}
+  .btn{background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:9px 14px;font-size:14px}
+  .btn:hover{border-color:#39404f;background:#1b2029}
+  .btn.primary{background:var(--accent);color:#06231f;border-color:transparent;font-weight:650}
+  .btn.primary:hover{filter:brightness(1.08)}
+  .btn.ghost{background:none;border:none;color:var(--accent);padding:6px 8px;font-size:13px}
+  .btn.ghost:hover{text-decoration:underline}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
+
+  /* ── account strip ────────────────────────────────────── */
+  .account{display:flex;align-items:center;gap:8px;padding:9px 14px;font-size:13px;color:var(--muted)}
+  .account span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .authform{display:none;flex-wrap:wrap;gap:8px;padding:14px;border-top:1px solid var(--line)}
+  .authform.open{display:flex}
+  .authform input{flex:1 1 190px;background:#0e1117;border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;color:var(--text);font-size:14px}
+  .authform input:focus{outline:none;border-color:#39404f}
+  .authnote{flex:1 1 100%;margin:0;font-size:12px;color:var(--muted)}
+  .authnote.err{color:var(--err)}
+  .authnote.ok{color:var(--accent)}
+
+  /* ── conversation ─────────────────────────────────────── */
+  .convo{flex:1;display:flex;flex-direction:column;min-height:340px;overflow:hidden}
+  #log{flex:1;padding:18px;display:flex;flex-direction:column;gap:14px;
+       overflow-y:auto;max-height:min(56vh,520px);scrollbar-width:thin}
+  #log::-webkit-scrollbar{width:8px}
+  #log::-webkit-scrollbar-thumb{background:#232833;border-radius:8px}
+
+  .empty{margin:auto 0;color:var(--muted);font-size:14px;text-align:center}
+  .empty h2{color:var(--text);font-size:15px;margin:0 0 12px;font-weight:600}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:4px}
+  .chip{background:var(--panel-2);border:1px solid var(--line);border-radius:999px;
+        padding:7px 14px;font-size:13px;color:var(--text)}
+  .chip:hover{border-color:var(--accent);color:var(--accent)}
+
+  .row{display:flex;flex-direction:column;gap:5px;max-width:82%}
+  .row.me{align-self:flex-end;align-items:flex-end}
+  .row.bot{align-self:flex-start}
+  .bubble{padding:11px 15px;border-radius:16px;white-space:pre-wrap;word-break:break-word}
+  .me .bubble{background:var(--user);border-bottom-right-radius:5px}
+  .bot .bubble{background:var(--panel-2);border:1px solid var(--line);border-bottom-left-radius:5px}
+  .bot.error .bubble{background:#2a1618;border-color:#5a2a2e;color:#ffc4c4}
+  .bot.pending .bubble{color:var(--muted);letter-spacing:3px}
+
+  /* the per-message badge: the cache hit is the thing to notice */
+  .meta{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--muted);
+        padding-left:4px;flex-wrap:wrap}
+  .tag{border:1px solid var(--line);border-radius:999px;padding:2px 8px;
+       font-variant-numeric:tabular-nums}
+  .tag.cache{color:var(--accent);border-color:var(--accent-dim);background:rgba(94,234,212,.08);font-weight:600}
+  .tag.model{color:var(--muted)}
+
+  /* ── composer ─────────────────────────────────────────── */
+  .composer{display:flex;gap:9px;padding:12px;border-top:1px solid var(--line);align-items:center}
+  .composer input{flex:1;background:#0e1117;border:1px solid var(--line);border-radius:11px;
+    padding:12px 14px;color:var(--text);font-size:14.5px}
+  .composer input:focus{outline:none;border-color:#39404f}
+  .mic{width:44px;height:44px;flex:none;border-radius:50%;display:grid;place-items:center;
+       background:var(--panel-2);border:1px solid var(--line);padding:0}
+  .mic:hover{border-color:var(--accent)}
+  .mic.on{background:var(--accent);border-color:transparent}
+  .mic svg{width:19px;height:19px;stroke:var(--text);fill:none;stroke-width:1.9;
+           stroke-linecap:round;stroke-linejoin:round}
+  .mic.on svg{stroke:#06231f}
+
+  /* ── stats ────────────────────────────────────────────── */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);
+         border-radius:var(--radius);overflow:hidden;border:1px solid var(--line)}
+  .stat{background:var(--panel);padding:13px 14px}
+  .stat b{display:block;font-size:18px;font-weight:650;font-variant-numeric:tabular-nums;
+          letter-spacing:-.02em}
+  .stat b.hit{color:var(--accent)}
+  .stat small{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .foot{display:flex;gap:14px;align-items:center;color:var(--muted);font-size:11.5px;padding:0 4px;flex-wrap:wrap}
+  .foot a{color:var(--muted)}
+  .foot .spacer{flex:1}
+
+  @media(max-width:560px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .row{max-width:92%}
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
+
   <header>
     <div class="orb" id="orb"></div>
-    <div style="flex:1">
+    <div>
       <h1>Sarjy</h1>
-      <p class="sub" id="status">ready</p>
+      <p class="sub"><span class="dot" id="dot"></span><span id="state">ready</span></p>
     </div>
-    <button id="mic">Start talking</button>
+    <div class="spacer"></div>
+    <button class="btn" id="flush" title="Empty the cache so the next question misses">Clear cache</button>
   </header>
 
   <div class="card">
-    <div id="log"><div class="empty">
-      Ask about the weather. Try “What’s the weather in Delhi?”, then ask it a
-      different way to see a cache hit.
-    </div></div>
-    <form id="form">
-      <input type="text" id="text" placeholder="or type here" autocomplete="off">
-      <button type="submit">Send</button>
+    <div class="account">
+      <span id="who">Not signed in — Sarjy still remembers this browser.</span>
+      <button class="btn ghost" id="authToggle">Sign in</button>
+      <button class="btn ghost" id="signOut" hidden>Sign out</button>
+    </div>
+    <form class="authform" id="authForm">
+      <input type="email" id="email" placeholder="email" autocomplete="username">
+      <input type="password" id="password" placeholder="password (8+ characters)" autocomplete="current-password">
+      <button type="submit" class="btn primary" id="doLogin">Sign in</button>
+      <button type="button" class="btn" id="doRegister">Create account</button>
+      <p class="authnote" id="authNote">Signing in keeps whatever Sarjy already learned here.</p>
     </form>
   </div>
 
-  <div class="card panel">
-    <h2>Last request</h2>
-    <div class="kv">
-      <div><div class="k">served from</div><div class="v" id="m-cached">—</div></div>
-      <div><div class="k">route</div><div class="v" id="m-route">—</div></div>
-      <div><div class="k">intent</div><div class="v" id="m-intent">—</div></div>
-      <div><div class="k">latency</div><div class="v" id="m-lat">—</div></div>
+  <div class="card convo">
+    <div id="log">
+      <div class="empty">
+        <h2>Ask about the weather</h2>
+        <div>Then ask the same thing a different way — the second one comes from cache.</div>
+        <div class="chips">
+          <button class="chip" data-q="What's the weather in Delhi?">What's the weather in Delhi?</button>
+          <button class="chip" data-q="How's Delhi looking?">How's Delhi looking?</button>
+          <button class="chip" data-q="I live in Dubai">I live in Dubai</button>
+          <button class="chip" data-q="Do I need a jacket today?">Do I need a jacket today?</button>
+        </div>
+      </div>
     </div>
-    <p class="note" id="note">Voice needs Chrome. Typing works everywhere.</p>
+    <form class="composer" id="form">
+      <button type="button" class="mic" id="mic" title="Speak">
+        <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+      </button>
+      <input type="text" id="text" placeholder="Ask about the weather…" autocomplete="off">
+      <button type="submit" class="btn primary">Send</button>
+    </form>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b id="s-served">—</b><small>served from</small></div>
+    <div class="stat"><b id="s-lat">—</b><small>latency</small></div>
+    <div class="stat"><b id="s-hits">0/0</b><small>cache hits</small></div>
+    <div class="stat"><b id="s-intent">—</b><small>intent</small></div>
+  </div>
+
+  <div class="foot">
+    <span id="note">Voice needs Chrome. Typing works everywhere.</span>
+    <span class="spacer"></span>
+    <a href="/metrics" target="_blank">metrics</a>
+    <a href="/health" target="_blank">health</a>
+    <span id="sid"></span>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-const log = $('log'), orb = $('orb');
+const log = $('log');
+let busy = false, turns = 0, hits = 0;
 
-// Session id lives in localStorage: it is how cross-session memory is keyed.
-// Not an identity — there are no accounts.
+// Session id identifies the browser, not the person. Signed out, facts are
+// keyed by it; signed in, it is what gets adopted onto the account.
 const sessionId = (() => {
   let s = localStorage.getItem('sarjy_session');
-  if (!s) { s = crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+  if (!s) { s = crypto.randomUUID().replace(/-/g,'').slice(0,24);
             localStorage.setItem('sarjy_session', s); }
   return s;
 })();
+$('sid').textContent = 'session ' + sessionId.slice(0,8);
 
-let busy = false;
+let token = localStorage.getItem('sarjy_token') || null;
+const authHeaders = () => token ? {'Authorization':'Bearer ' + token} : {};
 
-function setState(s, label) {
-  orb.className = 'orb' + (s ? ' ' + s : '');
-  $('status').textContent = label || s || 'ready';
+/* ── ui state ─────────────────────────────────────────── */
+function setState(s, label){
+  $('orb').className = 'orb' + (s ? ' ' + s : '');
+  $('state').textContent = label || s || 'ready';
+  const dot = $('dot');
+  dot.className = 'dot' + (s === 'speaking' || s === 'listening' ? ' ok' : s === 'error' ? ' err' : '');
 }
 
-function addTurn(cls, text) {
-  const empty = log.querySelector('.empty');
-  if (empty) empty.remove();
-  const el = document.createElement('div');
-  el.className = 'turn ' + cls;
-  el.textContent = text;
-  log.appendChild(el);
+function addRow(who, text, cls){
+  const empty = log.querySelector('.empty'); if (empty) empty.remove();
+  const row = document.createElement('div');
+  row.className = 'row ' + who + (cls ? ' ' + cls : '');
+  const b = document.createElement('div');
+  b.className = 'bubble'; b.textContent = text;
+  row.appendChild(b);
+  log.appendChild(row);
   log.scrollTop = log.scrollHeight;
-  return el;
+  return row;
 }
 
-function showMetrics(d) {
-  const cached = $('m-cached');
-  cached.textContent = d.cached ? 'cache' : 'model';
-  cached.className = 'v' + (d.cached ? ' hit' : '');
-  $('m-route').textContent  = d.route  || '—';
-  $('m-intent').textContent = d.intent || '—';
-  $('m-lat').textContent    = d.latency_ms != null ? d.latency_ms + ' ms' : '—';
+// The badge under each answer is where the cache hit becomes visible.
+function addMeta(row, d){
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  const cached = !!d.cached;
+  meta.innerHTML =
+    `<span class="tag ${cached ? 'cache' : 'model'}">${cached ? '⚡ cache' : 'model' + (d.route ? ' · ' + d.route : '')}</span>` +
+    `<span class="tag">${d.latency_ms} ms</span>` +
+    (d.intent ? `<span class="tag">${d.intent}</span>` : '');
+  row.appendChild(meta);
+  log.scrollTop = log.scrollHeight;
 }
 
-function speak(text) {
+function updateStats(d){
+  turns++; if (d.cached) hits++;
+  const served = $('s-served');
+  served.textContent = d.cached ? 'cache' : 'model';
+  served.className = d.cached ? 'hit' : '';
+  $('s-lat').textContent = d.latency_ms + ' ms';
+  $('s-hits').textContent = hits + '/' + turns;
+  $('s-intent').textContent = d.intent || '—';
+}
+
+function speak(text){
   if (!('speechSynthesis' in window)) return;
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.rate = 1.05;
-  u.onstart = () => setState('speaking', 'speaking');
-  u.onend   = () => setState('', 'ready');
+  u.onstart = () => setState('speaking','speaking');
+  u.onend   = () => setState('','ready');
   speechSynthesis.speak(u);
 }
 
-async function ask(text) {
+/* ── asking ───────────────────────────────────────────── */
+async function ask(text){
   if (busy) return;
   busy = true;
-  addTurn('user', text);
-  const pending = addTurn('bot pending', '…');
-  setState('thinking', 'thinking');
-
-  try {
-    const res = await fetch('/chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, text })
+  addRow('me', text);
+  const pending = addRow('bot','…','pending');
+  setState('thinking','thinking');
+  try{
+    const res = await fetch('/chat',{
+      method:'POST',
+      headers:{'content-type':'application/json', ...authHeaders()},
+      body: JSON.stringify({session_id: sessionId, text})
     });
-    const data = await res.json();
-
-    if (!res.ok) {
-      pending.remove();
-      addTurn('err', data.error?.message || 'Request failed');
-      setState('', 'error');
+    const d = await res.json();
+    pending.remove();
+    if(!res.ok){
+      addRow('bot', d.error?.message || 'Request failed', 'error');
+      setState('error','error');
       return;
     }
+    const row = addRow('bot', d.answer);
+    addMeta(row, d);
+    updateStats(d);
+    speak(d.answer);
+  }catch{
     pending.remove();
-    addTurn('bot', data.answer);
-    showMetrics(data);
-    speak(data.answer);
-  } catch (e) {
-    pending.remove();
-    addTurn('err', 'Could not reach the server.');
-    setState('', 'error');
-  } finally {
-    busy = false;
-  }
+    addRow('bot','Could not reach the server.','error');
+    setState('error','error');
+  }finally{ busy = false; }
 }
 
-// ---- typing -------------------------------------------------------------
 $('form').addEventListener('submit', e => {
   e.preventDefault();
-  const v = $('text').value.trim();
-  if (!v) return;
-  $('text').value = '';
-  ask(v);
+  const v = $('text').value.trim(); if(!v) return;
+  $('text').value = ''; ask(v);
+});
+log.addEventListener('click', e => {
+  const chip = e.target.closest('.chip'); if (chip) ask(chip.dataset.q);
+});
+$('flush').addEventListener('click', async () => {
+  try{
+    const r = await fetch('/admin/flush',{method:'POST'});
+    const d = await r.json();
+    hits = 0; turns = 0; $('s-hits').textContent = '0/0';
+    addRow('bot', `Cache cleared — ${d.evicted} entr${d.evicted === 1 ? 'y' : 'ies'} removed. The next question will miss.`);
+  }catch{ addRow('bot','Could not clear the cache.','error'); }
 });
 
-// ---- voice --------------------------------------------------------------
+/* ── account ──────────────────────────────────────────── */
+function setSignedIn(email){
+  $('who').textContent = 'Signed in as ' + email;
+  $('signOut').hidden = false; $('authToggle').hidden = true;
+  $('authForm').classList.remove('open');
+}
+function setSignedOut(){
+  $('who').textContent = 'Not signed in — Sarjy still remembers this browser.';
+  $('signOut').hidden = true; $('authToggle').hidden = false;
+}
+async function refreshWho(){
+  if(!token){ setSignedOut(); return; }
+  // Show the signed-in controls straight away: waiting on /auth/me means a slow
+  // or failed request leaves the bar claiming you are signed out while holding
+  // a valid token, with no way to sign out of a state it denies you are in.
+  setSignedIn(localStorage.getItem('sarjy_email') || 'your account');
+  try{
+    const d = await (await fetch('/auth/me',{headers:authHeaders()})).json();
+    if(d.signed_in){ localStorage.setItem('sarjy_email', d.email); setSignedIn(d.email); }
+    else { token = null; localStorage.removeItem('sarjy_token');
+           localStorage.removeItem('sarjy_email'); setSignedOut(); }
+  }catch{
+    // A network failure is not proof the token is bad. Stay signed in.
+    $('who').textContent += ' (offline)';
+  }
+}
+async function submitAuth(path){
+  const note = $('authNote');
+  note.className = 'authnote'; note.textContent = 'Working…';
+  try{
+    const r = await fetch(path,{
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({email:$('email').value.trim(), password:$('password').value,
+                            session_id: sessionId})
+    });
+    const d = await r.json();
+    if(!r.ok){ note.className='authnote err';
+               note.textContent = d.error?.message || 'That did not work.'; return; }
+    token = d.token;
+    localStorage.setItem('sarjy_token', token);
+    localStorage.setItem('sarjy_email', d.email);
+    $('password').value = '';
+    note.className = 'authnote ok';
+    note.textContent = d.adopted_facts
+      ? `Signed in. Kept ${d.adopted_facts} thing${d.adopted_facts>1?'s':''} Sarjy already knew.`
+      : 'Signed in.';
+    setSignedIn(d.email);
+  }catch{ note.className='authnote err'; note.textContent='Could not reach the server.'; }
+}
+$('authToggle').addEventListener('click', () => $('authForm').classList.toggle('open'));
+$('authForm').addEventListener('submit', e => { e.preventDefault(); submitAuth('/auth/login'); });
+$('doRegister').addEventListener('click', () => submitAuth('/auth/register'));
+$('signOut').addEventListener('click', () => {
+  token = null;
+  localStorage.removeItem('sarjy_token'); localStorage.removeItem('sarjy_email');
+  addRow('bot','Signed out. I still remember things in this browser.');
+  setSignedOut();
+});
+refreshWho();
+
+/* ── voice ────────────────────────────────────────────── */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const mic = $('mic');
 let recog = null, listening = false;
 
-if (!SR) {
+if(!SR){
   mic.disabled = true;
-  mic.textContent = 'Voice unsupported';
-  $('note').textContent = 'This browser has no Web Speech API. Use the text box, or open in Chrome.';
-} else {
+  $('note').textContent = 'This browser has no Web Speech API — use the text box, or open in Chrome.';
+}else{
   recog = new SR();
-  recog.lang = 'en-US';
-  recog.interimResults = false;
-  recog.continuous = false;      // one utterance per press; simplest correct thing
-
-  recog.onstart  = () => { listening = true;  mic.classList.add('on');
-                           mic.textContent = 'Listening…'; setState('listening', 'listening'); };
+  recog.lang = 'en-US'; recog.interimResults = false; recog.continuous = false;
+  recog.onstart  = () => { listening = true; mic.classList.add('on'); setState('listening','listening'); };
   recog.onresult = e => ask(e.results[0][0].transcript.trim());
   recog.onerror  = e => {
-    const msg = e.error === 'not-allowed'
-      ? 'Microphone permission denied. Typing still works.'
+    $('note').textContent = e.error === 'not-allowed'
+      ? 'Microphone permission denied — typing still works.'
       : 'Speech error: ' + e.error;
-    $('note').textContent = msg;
-    setState('', 'ready');
+    setState('','ready');
   };
-  recog.onend    = () => { listening = false; mic.classList.remove('on');
-                           mic.textContent = 'Start talking';
-                           if (!busy) setState('', 'ready'); };
-
+  recog.onend = () => { listening = false; mic.classList.remove('on');
+                        if(!busy) setState('','ready'); };
   mic.addEventListener('click', () => {
-    if (listening) { recog.stop(); return; }
-    // Speaking over the reply should stop it.
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
-    try { recog.start(); } catch (_) { /* already starting */ }
+    if(listening){ recog.stop(); return; }
+    if('speechSynthesis' in window) speechSynthesis.cancel();  // barge in
+    try{ recog.start(); }catch{}
   });
 }
 </script>
