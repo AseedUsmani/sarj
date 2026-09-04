@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app import cache, classifier, intents, llm, memory, pending, request_log
+from app import cache, classifier, errors, intents, llm, memory, pending, request_log
 from app.config import settings
 from app.tools import weather
 
@@ -68,11 +68,20 @@ class Answer:
 
 
 class PipelineError(RuntimeError):
-    def __init__(self, code: str, message: str, trace_id: str = "", status: int = 503):
-        super().__init__(message)
+    """Carries the internal cause for the log and a safe message for the user.
+
+    `detail` is never sent to a client: an end user heard "GROQ_API_KEY is not
+    configured" read aloud, which told them nothing and disclosed how the
+    service is built.
+    """
+
+    def __init__(self, code: str, detail: str, trace_id: str = ""):
+        super().__init__(detail)
         self.code = code
+        self.detail = detail
         self.trace_id = trace_id
-        self.status = status
+        self.status = errors.status_for(code)
+        self.user_message = errors.message_for(code)
 
 
 async def _resume(session_id: str, held, city: str, facts: dict,
@@ -104,6 +113,10 @@ async def _resume(session_id: str, held, city: str, facts: dict,
             return None
 
         system = BASE_PROMPT + GROUNDING + "\n\nLive data:\n" + result.context
+        # The city here always came from the reply to "where do you live?", so
+        # the model is always told what "home" means.
+        system += (f"\n\n\"Home\" means {city.title()}. The live data above is "
+                   f"for there.")
         if facts.get("unit"):
             system += f"\n\nThe user prefers {facts['unit']}."
 
@@ -122,9 +135,15 @@ async def _resume(session_id: str, held, city: str, facts: dict,
         return None
 
 
-async def handle(session_id: str, user_text: str, mode: str) -> Answer:
+async def handle(session_id: str, user_text: str, mode: str,
+                 owner: Optional[str] = None) -> Answer:
     started = time.perf_counter()
     trace_id = uuid.uuid4().hex[:12]
+    # Facts belong to the owner (an account if signed in, else the browser
+    # session). Everything else -- logging, deferred questions -- stays keyed by
+    # the session, because they describe this conversation rather than this
+    # person.
+    owner = owner or session_id
     row = request_log.LogRow(trace_id=trace_id, session_id=session_id,
                              mode=mode, latency_ms=0)
 
@@ -160,12 +179,12 @@ async def handle(session_id: str, user_text: str, mode: str) -> Answer:
         trusted = cls.confidence >= settings.confidence_floor
         degrade_tier = not trusted
 
-        facts = await memory.load(session_id)
+        facts = await memory.load(owner)
 
         # --- 3. memory intents answer without an upstream call -----------
         if trusted and cls.intent == "set_home_city" and cls.params.get("city"):
             city = cls.params["city"]
-            await memory.put(session_id, "home_city", city)
+            await memory.put(owner, "home_city", city)
             ack = f"Got it, I'll remember {city.title()}."
 
             # If this reply answers a question we deferred, answer that too
@@ -181,7 +200,7 @@ async def handle(session_id: str, user_text: str, mode: str) -> Answer:
 
         if trusted and cls.intent == "set_units" and cls.params.get("unit"):
             u = cls.params["unit"]
-            await memory.put(session_id, "unit", u)
+            await memory.put(owner, "unit", u)
             return await finish(f"Okay, I'll use {u} from now on.", cls=cls)
 
         if trusted and cls.intent == "recall_fact":
@@ -194,10 +213,12 @@ async def handle(session_id: str, user_text: str, mode: str) -> Answer:
         # "weather at home", or any weather question with no city, resolves to
         # the stored city. This is also what makes a personalised question share
         # a cache entry with everyone else asking about that city.
+        resolved_from_memory = False
         if spec.needs_tool and not params.get("city"):
             stored = memory.home_city(facts)
             if stored:
                 params["city"] = stored
+                resolved_from_memory = True
             elif cls.intent == "weather_at_home":
                 pending.remember(session_id, user_text, cls.intent, params)
                 return await finish(ASK_LOCATION, cls=cls)
@@ -206,21 +227,16 @@ async def handle(session_id: str, user_text: str, mode: str) -> Answer:
         # usually a bare place name rather than "I live in X". Treat a short
         # place-only turn as the answer to that question and store it, or the
         # promise is broken and the next vague turn asks again.
-        elif (spec.needs_tool
-              and params.get("city")
-              and not memory.home_city(facts)
-              and len(user_text.split()) <= 3):
-            await memory.put(session_id, "home_city", params["city"])
-            facts["home_city"] = params["city"]
-            # A bare place name is usually the reply to ASK_LOCATION. If a
-            # question is waiting on it, answer that instead of the literal
-            # "what's the weather there" this turn would otherwise become.
-            held = pending.take(session_id)
-            if held:
-                resumed = await _resume(
-                    session_id, held, params["city"], facts, mode, row, trace_id)
-                if resumed:
-                    return await finish(resumed, route=row.route, cls=cls)
+        # A short place-only turn is usually the reply to ASK_LOCATION. Whether
+        # to remember it is decided after the tool call, not here: an earlier
+        # version stored the city immediately and "weather in Nowherecityxyz"
+        # became the user's permanent home, breaking every later question.
+        adopt_as_home = (
+            spec.needs_tool
+            and params.get("city")
+            and not memory.home_city(facts)
+            and len(user_text.split()) <= 3
+        )
 
         row.cacheable = (
             trusted
@@ -282,6 +298,17 @@ async def handle(session_id: str, user_text: str, mode: str) -> Answer:
             if result.freshness_seconds:
                 ttl_seconds = result.freshness_seconds
 
+            # The tool resolved it, so it is a real place worth remembering.
+            if adopt_as_home:
+                await memory.put(owner, "home_city", params["city"])
+                facts["home_city"] = params["city"]
+                held = pending.take(session_id)
+                if held:
+                    resumed = await _resume(
+                        session_id, held, params["city"], facts, mode, row, trace_id)
+                    if resumed:
+                        return await finish(resumed, route=row.route, cls=cls)
+
         # --- 6. route and generate ---------------------------------------
         # baseline mode ignores routing so the comparison is same-code.
         tier = "large" if (mode == "baseline" or degrade_tier) else spec.tier
@@ -292,6 +319,11 @@ async def handle(session_id: str, user_text: str, mode: str) -> Answer:
         elif not spec.needs_tool:
             system += ("\n\nThis turn needs no weather data. Reply "
                        "conversationally and offer to check the weather.")
+        if resolved_from_memory:
+            # Without this the model reads "weather at home", sees a city it was
+            # not told is home, and refuses under the grounding instruction.
+            system += (f"\n\n\"Home\" means {params['city'].title()}. The live "
+                       f"data above is for there.")
         if facts.get("unit"):
             system += f"\n\nThe user prefers {facts['unit']}."
 
@@ -314,8 +346,11 @@ async def handle(session_id: str, user_text: str, mode: str) -> Answer:
         return await finish(completion.text, route=tier, cls=cls)
 
     except llm.UpstreamError as exc:
-        row.error_code = "upstream_timeout"
+        code = "rate_limited" if exc.rate_limited else "upstream_timeout"
+        row.error_code = code
         row.latency_ms = int((time.perf_counter() - started) * 1000)
         await request_log.write(row)
-        log.warning("upstream failed trace=%s: %s", trace_id, exc)
-        raise PipelineError("upstream_timeout", str(exc), trace_id) from exc
+        # The cause is logged with the trace id, and only the trace id reaches
+        # the user, so a report can still be traced back to this line.
+        log.warning("upstream failed trace=%s code=%s: %s", trace_id, code, exc)
+        raise PipelineError(code, str(exc), trace_id) from exc

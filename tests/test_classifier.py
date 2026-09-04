@@ -68,6 +68,16 @@ CASES = [
     ("mumbai forecast",                      "forecast_today",    "mumbai"),
     ("bangalore temperature",                "temperature",       "bangalore"),
 
+    # Common destinations are not places. "go to the beach" resolved to Beach,
+    # North Dakota -- a real town, so geocoding succeeded and the answer was
+    # confidently about the wrong continent. These must fall through to the
+    # stored home city instead.
+    ("is it a good day to go to the beach tomorrow",
+                                             "activity_advice",   None),
+    ("should I go to the park today",        "travel_advice",     None),
+    ("is it good weather for the beach in Goa",
+                                             "activity_advice",   "goa"),
+
     # Sarjy answers "where do you live? ... or just name a city", so a bare
     # place name must work. The prompt should not promise what the classifier
     # cannot do.

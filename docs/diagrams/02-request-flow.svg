@@ -1,0 +1,239 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1140 1092" role="img" aria-label="Request flow through nine stages, from resolving the owner to storing and logging, with a cache hit branch.">
+<style>:root{
+    --paper:#E9ECEF;
+    --panel:#FFFFFF;
+    --ink:#141C24;
+    --rule:#AEB8C2;
+    --muted:#5B6772;
+    --signal:#0A7361;
+    --signal-tint:#EAF4F1;
+    --chip:#F1F4F6;
+    --sans:"Barlow","Helvetica Neue",Arial,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  }
+*{box-sizing:border-box}
+/* ---- masthead ---- */
+  .masthead{padding-bottom:28px;border-bottom:1.5px solid var(--ink);margin-bottom:48px}
+.masthead h1{
+    font-size:clamp(38px,7vw,66px);
+    font-weight:700;
+    letter-spacing:-0.025em;
+    line-height:1;
+    margin:0 0 18px;
+  }
+.lede{
+    font-size:clamp(16px,2.1vw,20px);
+    line-height:1.45;
+    max-width:52ch;
+    margin:0;
+    color:var(--ink);
+  }
+.lede b{font-weight:600}
+.meta{
+    margin:22px 0 0;
+    font-family:var(--mono);
+    font-size:12.5px;
+    letter-spacing:0.02em;
+    color:var(--muted);
+  }
+/* ---- sheets ---- */
+  .sheet{
+    background:var(--panel);
+    border:1px solid var(--rule);
+    margin-bottom:40px;
+  }
+.titleblock{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    gap:16px;
+    padding:16px 22px 15px;
+    border-bottom:1px solid var(--rule);
+  }
+.titleblock h2{
+    margin:0;
+    font-size:19px;
+    font-weight:600;
+    letter-spacing:-0.01em;
+  }
+.titleblock .idx{
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--muted);
+    white-space:nowrap;
+  }
+.field{
+    overflow-x:auto;
+    padding:26px 22px 30px;
+    background-color:var(--panel);
+    background-image:
+      linear-gradient(to right, rgba(20,28,36,.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(20,28,36,.05) 1px, transparent 1px);
+    background-size:26px 26px;
+  }
+.field svg{display:block;width:100%;height:auto;min-width:760px}
+.note{
+    padding:15px 22px 17px;
+    border-top:1px solid var(--rule);
+    font-size:14.5px;
+    line-height:1.5;
+    color:var(--muted);
+    max-width:74ch;
+  }
+.note b{color:var(--ink);font-weight:600}
+.note code{font-family:var(--mono);font-size:13px;color:var(--ink)}
+/* ---- svg type roles ---- */
+  .t-title{font-family:var(--sans);font-size:19px;font-weight:600;fill:var(--ink)}
+.t-boxtitle{font-family:var(--sans);font-size:17px;font-weight:600;fill:var(--ink)}
+.t-stage{font-family:var(--sans);font-size:16.5px;font-weight:600;fill:var(--ink)}
+.t-stage-r{font-family:var(--sans);font-size:16.5px;font-weight:600;fill:#FFFFFF}
+.t-code{font-family:var(--mono);font-size:13px;fill:var(--ink)}
+.t-code-lg{font-family:var(--mono);font-size:14px;fill:var(--ink)}
+.t-code-sm{font-family:var(--mono);font-size:12px;fill:var(--ink)}
+.t-code-mut{font-family:var(--mono);font-size:13px;fill:var(--muted)}
+.t-code-r{font-family:var(--mono);font-size:13px;fill:#CBD5DD}
+.t-note{font-family:var(--sans);font-size:13px;fill:var(--muted)}
+.t-note-b{font-family:var(--sans);font-size:13.5px;font-weight:600;fill:var(--ink)}
+.t-eyebrow{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.13em;fill:var(--muted)}
+.t-edge{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.06em;fill:var(--muted)}
+.t-edge-s{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.06em;fill:var(--signal)}
+.t-cap{font-family:var(--sans);font-size:14.5px;fill:var(--ink)}
+.t-cap-mut{font-family:var(--sans);font-size:13.5px;fill:var(--muted)}
+.t-badge{font-family:var(--mono);font-size:14px;fill:#FFFFFF}
+.t-badge-r{font-family:var(--mono);font-size:14px;fill:var(--ink)}
+.box{fill:var(--panel);stroke:var(--ink);stroke-width:1.5}
+.box-ink{fill:var(--ink);stroke:var(--ink);stroke-width:1.5}
+.box-sig{fill:var(--signal-tint);stroke:var(--signal);stroke-width:1.75}
+.chip{fill:var(--chip);stroke:var(--rule);stroke-width:1}
+.edge{stroke:var(--ink);stroke-width:1.4;fill:none}
+.edge-sig{stroke:var(--signal);stroke-width:1.75;fill:none}
+.lead{stroke:var(--rule);stroke-width:1.25;stroke-dasharray:2 4;fill:none}
+.hair{stroke:var(--rule);stroke-width:1}
+.hair-ink{stroke:var(--ink);stroke-width:1}
+.field{padding:18px 12px 22px}
+.titleblock{padding:14px 16px}
+.note{padding:14px 16px 16px}
+}
+.field{background-image:none}
+}</style>
+        <defs>
+          <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#141C24"/>
+          </marker>
+          <marker id="ahs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#0A7361"/>
+          </marker>
+        </defs>
+
+        <!-- entry -->
+        <rect class="box" x="300" y="28" width="460" height="68" rx="3"/>
+        <text class="t-code-lg" x="326" y="60">POST /chat</text>
+        <text class="t-code-mut" x="326" y="82">Authorization: Bearer … (optional)</text>
+        <path class="edge" d="M530,96 L530,124" marker-end="url(#ah2)"/>
+
+        <!-- callout A -->
+        <rect class="box" x="24" y="128" width="232" height="96" rx="3"/>
+        <rect x="24" y="128" width="4.5" height="96" fill="#141C24"/>
+        <text class="t-note-b" x="46" y="158">owner scopes memory only</text>
+        <text class="t-note" x="46" y="182">The cache is shared across</text>
+        <text class="t-note" x="46" y="202">all users.</text>
+        <path class="lead" d="M256,176 L296,176"/>
+
+        <!-- callout B -->
+        <path class="hair" d="M25,240 L25,322" stroke="#5B6772" stroke-width="1.5"/>
+        <text class="t-note-b" x="40" y="256">auth is optional throughout</text>
+        <text class="t-note" x="40" y="278">Anonymous is a first-class</text>
+        <text class="t-note" x="40" y="298">state, not a degraded one.</text>
+
+        <!-- stage 0 -->
+        <rect class="box-ink" x="300" y="128" width="460" height="112" rx="3"/>
+        <rect x="316" y="148" width="30" height="30" rx="2" fill="#FFFFFF"/>
+        <text class="t-badge-r" x="331" y="169" text-anchor="middle">0</text>
+        <text class="t-stage-r" x="362" y="170">resolve owner</text>
+        <text class="t-code-r" y="200"><tspan x="362">Bearer valid?</tspan><tspan x="496">→</tspan><tspan x="520">owner = user:&lt;id&gt;</tspan></text>
+        <text class="t-code-r" y="224"><tspan x="362">otherwise</tspan><tspan x="496">→</tspan><tspan x="520">owner = session_id</tspan></text>
+        <path class="lead" d="M764,184 L792,184"/>
+        <text class="t-code-sm" x="800" y="189" fill="#5B6772">SQLite: users</text>
+        <path class="edge" d="M530,240 L530,268" marker-end="url(#ah2)"/>
+
+        <!-- stage 1 -->
+        <rect class="box" x="300" y="272" width="460" height="68" rx="3"/>
+        <rect x="316" y="291" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="312" text-anchor="middle">1</text>
+        <text class="t-stage" x="362" y="312">classify</text>
+        <text class="t-code-mut" x="506" y="312">intent, params, confidence</text>
+        <path class="lead" d="M764,306 L792,306"/>
+        <text class="t-note" x="800" y="311">AI/DS dependency</text>
+        <path class="edge" d="M530,340 L530,368" marker-end="url(#ah2)"/>
+
+        <!-- stage 2 -->
+        <rect class="box" x="300" y="372" width="460" height="68" rx="3"/>
+        <rect x="316" y="391" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="412" text-anchor="middle">2</text>
+        <text class="t-stage" x="362" y="412">gate</text>
+        <text class="t-code-mut" x="506" y="412">low confidence → uncacheable</text>
+        <path class="edge" d="M530,440 L530,468" marker-end="url(#ah2)"/>
+
+        <!-- stage 3 -->
+        <rect class="box" x="300" y="472" width="460" height="68" rx="3"/>
+        <rect x="316" y="491" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="512" text-anchor="middle">3</text>
+        <text class="t-stage" x="362" y="512">resolve</text>
+        <text class="t-code-mut" x="506" y="512">"home" → stored city, units</text>
+        <path class="lead" d="M764,506 L792,506"/>
+        <text class="t-code-sm" x="800" y="511" fill="#5B6772">SQLite: facts[owner]</text>
+        <path class="edge" d="M530,540 L530,568" marker-end="url(#ah2)"/>
+
+        <!-- stage 4 -->
+        <rect class="box" x="300" y="572" width="460" height="68" rx="3"/>
+        <rect x="316" y="591" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="612" text-anchor="middle">4</text>
+        <text class="t-stage" x="362" y="612">build key</text>
+        <text class="t-code-mut" x="506" y="612">version | intent | params</text>
+        <path class="edge" d="M530,640 L530,668" marker-end="url(#ah2)"/>
+
+        <!-- stage 5 + hit branch -->
+        <rect class="box" x="300" y="672" width="460" height="68" rx="3"/>
+        <rect x="316" y="691" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="712" text-anchor="middle">5</text>
+        <text class="t-stage" x="362" y="712">cache lookup</text>
+        <text class="t-code-mut" x="506" y="712">shared across all owners</text>
+
+        <path class="edge-sig" d="M760,706 L848,706" marker-end="url(#ahs)"/>
+        <text class="t-edge-s" x="804" y="697" text-anchor="middle">HIT</text>
+        <rect class="box-sig" x="852" y="672" width="250" height="68" rx="3"/>
+        <text class="t-stage" x="876" y="700" fill="#0A7361">answer</text>
+        <text class="t-code-sm" x="876" y="722" fill="#0A7361">3ms · 0 tokens</text>
+
+        <path class="edge" d="M530,740 L530,786" marker-end="url(#ah2)"/>
+        <text class="t-edge" x="546" y="770">MISS</text>
+
+        <!-- stage 6 -->
+        <rect class="box" x="300" y="790" width="460" height="68" rx="3"/>
+        <rect x="316" y="809" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="830" text-anchor="middle">6</text>
+        <text class="t-stage" x="362" y="830">tool fetch</text>
+        <text class="t-code-mut" x="506" y="830">Open-Meteo</text>
+        <path class="lead" d="M764,824 L792,824"/>
+        <rect class="chip" x="800" y="810" width="78" height="28" rx="2"/>
+        <text class="t-code-sm" x="839" y="829" text-anchor="middle">148ms</text>
+        <path class="edge" d="M530,858 L530,886" marker-end="url(#ah2)"/>
+
+        <!-- stage 7 -->
+        <rect class="box" x="300" y="890" width="460" height="68" rx="3"/>
+        <rect x="316" y="909" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="930" text-anchor="middle">7</text>
+        <text class="t-stage" x="362" y="930">route + call</text>
+        <text class="t-code-mut" x="506" y="930">small | large</text>
+        <path class="lead" d="M764,924 L792,924"/>
+        <rect class="chip" x="800" y="910" width="78" height="28" rx="2"/>
+        <text class="t-code-sm" x="839" y="929" text-anchor="middle">398ms</text>
+        <path class="edge" d="M530,958 L530,986" marker-end="url(#ah2)"/>
+
+        <!-- stage 8 -->
+        <rect class="box" x="300" y="990" width="460" height="68" rx="3"/>
+        <rect x="316" y="1009" width="30" height="30" rx="2" fill="#141C24"/>
+        <text class="t-badge" x="331" y="1030" text-anchor="middle">8</text>
+        <text class="t-stage" x="362" y="1030">store + log</text>
+        <text class="t-code-mut" x="506" y="1030">cache_entries, request_log</text>
+      </svg>

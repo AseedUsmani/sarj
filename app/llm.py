@@ -24,7 +24,15 @@ Tier = Literal["small", "large"]
 
 
 class UpstreamError(RuntimeError):
-    """Upstream unreachable, refused, or malformed. Never surfaced as an answer."""
+    """Upstream unreachable, refused, or malformed. Never surfaced as an answer.
+
+    `rate_limited` distinguishes "try again shortly" from "something is broken",
+    which are different things to tell a caller.
+    """
+
+    def __init__(self, message: str, rate_limited: bool = False):
+        super().__init__(message)
+        self.rate_limited = rate_limited
 
 
 @dataclass(frozen=True)
@@ -112,7 +120,7 @@ async def complete(
         raise UpstreamError(f"{type(exc).__name__}: {exc}") from exc
 
     if resp.status_code == 429:
-        raise UpstreamError("rate limited by provider")
+        raise UpstreamError("rate limited by provider", rate_limited=True)
     if resp.status_code >= 400:
         raise UpstreamError(f"status {resp.status_code}: {resp.text[:200]}")
 

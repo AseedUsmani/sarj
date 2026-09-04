@@ -29,21 +29,56 @@ in `bonus_assignment/`, not built here.
 
 ## 2. Architecture
 
+> Diagrams are in [`docs/diagrams/`](diagrams/) as standalone SVG, and together
+> in [`sarjy-diagrams.html`](diagrams/sarjy-diagrams.html).
+
 One Python service, one container, static client served from the same origin.
 
-```
-browser ──► FastAPI ──► in-process vector index (~3MB)
-                    ├─► Postgres (Neon)
-                    └─► Groq · Open-Meteo
-```
+![System context](diagrams/01-system-context.svg)
+
+Two paths reach the service, not one: the auth endpoints hand back a token, and
+`/chat` either carries it or does without it.
 
 | Component | Responsibility |
 |---|---|
-| Pipeline | Orders the stages of a request; timeouts and fallbacks |
+| Pipeline | Orders the stages of a request; owns timeouts and fallbacks |
+| Auth | scrypt hashes, HMAC tokens. Optional throughout (§2.2) |
 | Classifier | External dependency behind an interface (§4) |
-| Cache | Key construction, lookup, expiry |
+| Memory | Facts, keyed by **owner** rather than session |
+| Cache | Key construction, lookup, expiry. Shared by every user |
 | Router | Picks the model tier on a miss |
 | Log | One row per request; the source of every published number |
+
+### 2.1 Request flow
+
+Owner resolution runs **before** classification, because facts are keyed by
+owner. Everything downstream of stage 3 is owner-independent — which is what
+lets a single cache serve every user.
+
+![Request flow](diagrams/02-request-flow.svg)
+
+Stage 8's log row is the one thing below stage 3 that still carries the session
+id — instrumentation, not behaviour.
+
+### 2.2 Accounts are optional, and signing in does not restart the conversation
+
+Anonymous is a first-class state. A browser gets a `session_id` in
+`localStorage` and its facts are keyed by that. Signing in **adopts** that
+session rather than replacing it.
+
+![Session adoption](diagrams/03-session-adoption.svg)
+
+The conversation continues — it does not restart.
+
+Where a fact exists on both sides the account's value is kept: signing in on a
+borrowed laptop must not overwrite what the account knows with whatever that
+browser picked up.
+
+**The owner scopes memory only.** The cache key contains no owner, so one entry
+serves everybody asking about Delhi. That inverts in banking, where customer
+identity is *in* the key namespace because a balance can never be shared — the
+sharpest structural difference between the two designs
+(`bonus_assignment/docs/TDD.md` §7).
 
 ## 3. API
 
@@ -361,6 +396,78 @@ forecast 60 min), not by the cache.
 Follow-ups ("what about tomorrow?") carry no context in their text, so they
 bypass the cache. Hit rate is therefore reported **against context-free traffic**,
 with that share measured separately.
+
+### 10.3 What a hit actually skips
+
+The lookup sits at stage 5 of the pipeline, **before** the tool call at 6 and
+generation at 7, so a hit skips both. Measured on a warm geocode:
+
+```
+MISS   Open-Meteo forecast    148 ms    $0          free API, no key
+       Groq (small tier)      398 ms    236 in / 96 out tokens
+       ─────────────────────────────
+       total                  546 ms
+
+HIT                             3 ms    0 tokens    $0
+```
+
+**Latency comes from both upstreams; money comes from only one.** Open-Meteo is
+free, so every dollar saved is the model call: **$0.047 per 1,000 hits** on the
+small tier, double on the large.
+
+Looking up *after* the tool call would still pay 148ms and a rate-limit slot on
+every request, for an answer the cache already holds.
+
+#### Case A — the large model is skipped
+
+Advice intents route to the large tier, so a repeat is where the cost saving is
+biggest.
+
+```
+"Do I need a jacket in Delhi?"      MISS   718ms   tool + large model
+"should I wear a jacket in Delhi"   HIT      5ms   neither
+```
+
+Both resolve to `rules-v1|clothing_advice|city=delhi`. The second pays nothing:
+no forecast call, no generation, and the saving is at the large tier's rate.
+
+Advice was *uncacheable* in an earlier revision, on the grounds that the answer
+depends on live conditions. That reasoning does not survive contact with
+`current_weather`, which depends on identical conditions and is cached for ten
+minutes. Advice is a sentence about the same tool output and inherits the same
+TTL; excluding it forfeited most of the achievable hit rate.
+
+#### Case B — the weather call is skipped
+
+Two calls are avoided per hit, and the tool call is avoided a second way even on
+a miss.
+
+```
+"What's the weather in Delhi?"   MISS   2312ms   geocode + forecast + model
+"How's Delhi looking?"           HIT       3ms   none of the three
+"weather in Delhi"               HIT       3ms   none of the three
+```
+
+The first request is slower than a steady-state miss because it also pays
+geocoding. Coordinates are immutable, so that result is memoised separately
+(`app/tools/weather.py`), which is why later misses cost ~550ms rather than
+~1200ms.
+
+So there are two caches doing different jobs:
+
+| | Avoids | Keyed by | Lifetime |
+|---|---|---|---|
+| Semantic cache | tool call **and** model call | `version\|intent\|params` | tool-declared TTL |
+| Geocode memo | one HTTP round trip | city name | process lifetime — coordinates do not change |
+
+#### The trade being accepted
+
+A hit serves weather up to the tool's freshness window old — ten minutes for
+current conditions — because the tool call is skipped, not repeated. That is the
+right trade for a temperature and the wrong one for an account balance, which is
+why the banking design caches an **answer template** and re-fills the figures
+from a live call: the model call is still skipped, but no stale number is ever
+served. See `bonus_assignment/docs/TDD.md` §7.2.
 
 ## 11. Routing
 

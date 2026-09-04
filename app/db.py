@@ -33,6 +33,12 @@ DDL = [
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (session_id, key)
     )""",
+    """CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        email         TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )""",
     """CREATE TABLE IF NOT EXISTS cache_entries (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
         cache_key         TEXT NOT NULL,
@@ -63,6 +69,7 @@ DDL = [
         error_code  TEXT,
         created_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email)",
     "CREATE INDEX IF NOT EXISTS ix_cache_lookup ON cache_entries (cache_key, expires_at)",
     "CREATE INDEX IF NOT EXISTS ix_cache_version ON cache_entries (embedding_version)",
     "CREATE INDEX IF NOT EXISTS ix_log_run ON request_log (mode, created_at)",

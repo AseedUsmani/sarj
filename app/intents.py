@@ -54,11 +54,16 @@ REGISTRY: dict[str, IntentSpec] = {s.name: s for s in [
 
     _s("compare_cities",    ("city", "city_b")),
 
-    # --- advice: uncacheable. The tool result changes underneath an
-    #     identical question, so a stored answer goes quietly out of date.
-    _s("clothing_advice",   ("city",),          cacheable=False, ttl="none", tier="large"),
-    _s("travel_advice",     ("city", "day"),    cacheable=False, ttl="none", tier="large"),
-    _s("activity_advice",   ("city",),          cacheable=False, ttl="none", tier="large"),
+    # --- advice: cacheable, on the freshness of the data it is derived from.
+    #     An earlier version marked these uncacheable on the grounds that the
+    #     answer depends on live conditions -- but so does current_weather,
+    #     which is cached for ten minutes. Advice is a sentence about the same
+    #     tool output, so it inherits the same TTL. Anything else is
+    #     inconsistent, and advice questions are common enough that excluding
+    #     them cost most of the achievable hit rate.
+    _s("clothing_advice",   ("city",),        tier="large"),
+    _s("travel_advice",     ("city", "day"),  ttl="forecast", tier="large"),
+    _s("activity_advice",   ("city",),        tier="large"),
 
     # --- memory: writes or reads stored facts, no tool ----------------------
     _s("set_home_city",     ("city",),  cacheable=False, ttl="none", tool=False),

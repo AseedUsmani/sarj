@@ -80,6 +80,11 @@ class Settings:
     # changing between runs (docs/TDD.md §12).
     record_fixtures: bool = os.getenv("RECORD_FIXTURES", "").lower() in ("1", "true", "yes")
 
+    # Signs auth tokens. Unset means a random per-boot value, which invalidates
+    # every token on restart -- fine locally, wrong in deployment, and warned
+    # about at startup.
+    auth_secret: str = os.getenv("AUTH_SECRET", "")
+
     rate_limit_per_min: int = _int("RATE_LIMIT_PER_MIN", 60)
 
     def __post_init__(self) -> None:
@@ -94,3 +99,7 @@ class Settings:
 
 
 settings = Settings()
+
+if not settings.auth_secret:
+    import secrets as _secrets
+    object.__setattr__(settings, "auth_secret", _secrets.token_urlsafe(32))
