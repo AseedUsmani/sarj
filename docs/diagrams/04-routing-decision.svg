@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1140 760" role="img"
+  aria-label="Routing decision: a request is answered from cache, from a deterministic handler, by the small model, or by the large model.">
+<style>:root{
+    --paper:#E9ECEF;
+    --panel:#FFFFFF;
+    --ink:#141C24;
+    --rule:#AEB8C2;
+    --muted:#5B6772;
+    --signal:#0A7361;
+    --signal-tint:#EAF4F1;
+    --chip:#F1F4F6;
+    --sans:"Barlow","Helvetica Neue",Arial,sans-serif;
+    --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  }
+*{box-sizing:border-box}
+/* ---- masthead ---- */
+  .masthead{padding-bottom:28px;border-bottom:1.5px solid var(--ink);margin-bottom:48px}
+.masthead h1{
+    font-size:clamp(38px,7vw,66px);
+    font-weight:700;
+    letter-spacing:-0.025em;
+    line-height:1;
+    margin:0 0 18px;
+  }
+.lede{
+    font-size:clamp(16px,2.1vw,20px);
+    line-height:1.45;
+    max-width:52ch;
+    margin:0;
+    color:var(--ink);
+  }
+.lede b{font-weight:600}
+.meta{
+    margin:22px 0 0;
+    font-family:var(--mono);
+    font-size:12.5px;
+    letter-spacing:0.02em;
+    color:var(--muted);
+  }
+/* ---- sheets ---- */
+  .sheet{
+    background:var(--panel);
+    border:1px solid var(--rule);
+    margin-bottom:40px;
+  }
+.titleblock{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    gap:16px;
+    padding:16px 22px 15px;
+    border-bottom:1px solid var(--rule);
+  }
+.titleblock h2{
+    margin:0;
+    font-size:19px;
+    font-weight:600;
+    letter-spacing:-0.01em;
+  }
+.titleblock .idx{
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--muted);
+    white-space:nowrap;
+  }
+.field{
+    overflow-x:auto;
+    padding:26px 22px 30px;
+    background-color:var(--panel);
+    background-image:
+      linear-gradient(to right, rgba(20,28,36,.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(20,28,36,.05) 1px, transparent 1px);
+    background-size:26px 26px;
+  }
+.field svg{display:block;width:100%;height:auto;min-width:760px}
+.note{
+    padding:15px 22px 17px;
+    border-top:1px solid var(--rule);
+    font-size:14.5px;
+    line-height:1.5;
+    color:var(--muted);
+    max-width:74ch;
+  }
+.note b{color:var(--ink);font-weight:600}
+.note code{font-family:var(--mono);font-size:13px;color:var(--ink)}
+/* ---- svg type roles ---- */
+  .t-title{font-family:var(--sans);font-size:19px;font-weight:600;fill:var(--ink)}
+.t-boxtitle{font-family:var(--sans);font-size:17px;font-weight:600;fill:var(--ink)}
+.t-stage{font-family:var(--sans);font-size:16.5px;font-weight:600;fill:var(--ink)}
+.t-stage-r{font-family:var(--sans);font-size:16.5px;font-weight:600;fill:#FFFFFF}
+.t-code{font-family:var(--mono);font-size:13px;fill:var(--ink)}
+.t-code-lg{font-family:var(--mono);font-size:14px;fill:var(--ink)}
+.t-code-sm{font-family:var(--mono);font-size:12px;fill:var(--ink)}
+.t-code-mut{font-family:var(--mono);font-size:13px;fill:var(--muted)}
+.t-code-r{font-family:var(--mono);font-size:13px;fill:#CBD5DD}
+.t-note{font-family:var(--sans);font-size:13px;fill:var(--muted)}
+.t-note-b{font-family:var(--sans);font-size:13.5px;font-weight:600;fill:var(--ink)}
+.t-eyebrow{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.13em;fill:var(--muted)}
+.t-edge{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.06em;fill:var(--muted)}
+.t-edge-s{font-family:var(--sans);font-size:12px;font-weight:600;letter-spacing:.06em;fill:var(--signal)}
+.t-cap{font-family:var(--sans);font-size:14.5px;fill:var(--ink)}
+.t-cap-mut{font-family:var(--sans);font-size:13.5px;fill:var(--muted)}
+.t-badge{font-family:var(--mono);font-size:14px;fill:#FFFFFF}
+.t-badge-r{font-family:var(--mono);font-size:14px;fill:var(--ink)}
+.box{fill:var(--panel);stroke:var(--ink);stroke-width:1.5}
+.box-ink{fill:var(--ink);stroke:var(--ink);stroke-width:1.5}
+.box-sig{fill:var(--signal-tint);stroke:var(--signal);stroke-width:1.75}
+.chip{fill:var(--chip);stroke:var(--rule);stroke-width:1}
+.edge{stroke:var(--ink);stroke-width:1.4;fill:none}
+.edge-sig{stroke:var(--signal);stroke-width:1.75;fill:none}
+.lead{stroke:var(--rule);stroke-width:1.25;stroke-dasharray:2 4;fill:none}
+.hair{stroke:var(--rule);stroke-width:1}
+.hair-ink{stroke:var(--ink);stroke-width:1}
+.field{padding:18px 12px 22px}
+.titleblock{padding:14px 16px}
+.note{padding:14px 16px 16px}
+}
+.field{background-image:none}
+}</style>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#141C24"/>
+    </marker>
+  </defs>
+
+  <text class="t-eyebrow" x="40" y="40">Which backend answers</text>
+  <text class="t-cap-mut" x="40" y="64">Four outcomes. Two of them never reach a model.</text>
+
+  <!-- request -->
+  <rect class="box" x="430" y="92" width="280" height="52" rx="3"/>
+  <text class="t-code" x="456" y="124">request</text>
+
+  <!-- 1. state-changing / memory -->
+  <path class="edge" d="M570,144 L570,190" marker-end="url(#ah)"/>
+  <rect class="box" x="330" y="190" width="480" height="60" rx="3"/>
+  <text class="t-code" x="356" y="216">memory intent?  set_home_city · set_units · recall_fact</text>
+  <text class="t-code-mut" x="356" y="238">answered from stored facts</text>
+
+  <path class="edge" d="M810,220 L980,220" marker-end="url(#ah)"/>
+  <rect class="box-sig" x="980" y="192" width="130" height="56" rx="3"/>
+  <text class="t-code" x="1000" y="216">no model</text>
+  <text class="t-code-mut" x="1000" y="236">~15 ms</text>
+
+  <!-- 2. cache -->
+  <path class="edge" d="M570,250 L570,300" marker-end="url(#ah)"/>
+  <rect class="box" x="330" y="300" width="480" height="72" rx="3"/>
+  <text class="t-code" x="356" y="326">cacheable and key matches?</text>
+  <text class="t-code-mut" x="356" y="348">18 of 23 intents are cacheable</text>
+  <text class="t-code-mut" x="356" y="366">follow_up and unknown never are</text>
+
+  <path class="edge" d="M810,336 L980,336" marker-end="url(#ah)"/>
+  <rect class="box-sig" x="980" y="308" width="130" height="56" rx="3"/>
+  <text class="t-code" x="1000" y="332">cache hit</text>
+  <text class="t-code-mut" x="1000" y="352">~3 ms · 0 tokens</text>
+
+  <!-- 3. tool -->
+  <path class="edge" d="M570,372 L570,422" marker-end="url(#ah)"/>
+  <rect class="box" x="330" y="422" width="480" height="56" rx="3"/>
+  <text class="t-code" x="356" y="448">tool fetch — Open-Meteo</text>
+  <text class="t-code-mut" x="356" y="468">148 ms · skipped on a hit</text>
+
+  <!-- 4. routing -->
+  <path class="edge" d="M570,478 L570,528" marker-end="url(#ah)"/>
+  <rect class="box" x="230" y="528" width="680" height="60" rx="3"/>
+  <text class="t-code" x="256" y="554">does the answer need reasoning, or only formatting?</text>
+  <text class="t-code-mut" x="256" y="576">decided by intent — no extra classification cost</text>
+
+  <!-- small -->
+  <path class="edge" d="M420,588 L300,642" marker-end="url(#ah)"/>
+  <rect class="box" x="40" y="642" width="480" height="92" rx="3"/>
+  <text class="t-boxtitle" x="66" y="670">small · gpt-oss-20b · 398 ms</text>
+  <text class="t-code-mut" x="66" y="694">weather · temperature · rain · wind · humidity · sunrise</text>
+  <text class="t-code-mut" x="66" y="714">forecast · compare · greeting — the model formats tool output</text>
+
+  <!-- large -->
+  <path class="edge" d="M720,588 L840,642" marker-end="url(#ah)"/>
+  <rect class="box" x="600" y="642" width="480" height="92" rx="3"/>
+  <text class="t-boxtitle" x="626" y="670">large · gpt-oss-120b · ~2x cost</text>
+  <text class="t-code-mut" x="626" y="694">clothing · travel · activity advice — a judgement the</text>
+  <text class="t-code-mut" x="626" y="714">data does not contain · follow-ups · unknown · low confidence</text>
+
+  <text class="t-note" x="40" y="754">18 of 23 intents route small. A hit skips the tool call and the model call both; routing only changes which model a miss pays for.</text>
+</svg>
