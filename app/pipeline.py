@@ -129,6 +129,18 @@ async def _resume(session_id: str, held, city: str, facts: dict,
         row.route = tier
         row.tokens_in, row.tokens_out = completion.tokens_in, completion.tokens_out
         row.intent = held.intent
+
+        # Store it. The resumed turn paid for a tool call and a generation just
+        # like any other miss; discarding the result meant the next identical
+        # question recomputed it from scratch.
+        if spec.cacheable and mode == "full" and cache.enabled():
+            key = cache.build_key(classifier.version(), held.intent, params,
+                                  significant=spec.params)
+            row.cache_key = key
+            await cache.store_answer(
+                key, held.text, completion.text,
+                result.freshness_seconds or intents.ttl_seconds(held.intent))
+
         return completion.text
     except llm.UpstreamError as exc:
         log.warning("resume failed trace=%s: %s", trace_id, exc)

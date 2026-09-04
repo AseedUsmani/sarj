@@ -15,5 +15,11 @@ def set_classifier(c: Classifier) -> None:
     _active = c
 
 
+def version() -> str:
+    """The active implementation's version. Enters the cache key, so anything
+    building a key outside the normal path needs it too."""
+    return _active.version
+
+
 def status() -> str:
     return f"ok ({_active.version})"
