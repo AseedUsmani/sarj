@@ -471,15 +471,30 @@ served. See `bonus_assignment/docs/TDD.md` §7.2.
 
 ## 11. Routing
 
-| Intents | Tier |
-|---|---|
-| Lookup, forecast, compare, memory, chat | small |
-| Advice, contextual follow-ups | large |
+![Routing decision](diagrams/04-routing-decision.svg)
 
-The classifier already produced the intent, so routing costs nothing extra. No
-escalation path in this build — an escalated request pays both tiers and is only
-net-negative when escalation is frequent (`e = 1 − small/large`).
-**TODO(compute)** once rates are confirmed.
+**Four outcomes, and two never reach a model.** A memory intent is answered from
+stored facts; a cache hit skips the tool call and the model call both. Routing
+only decides which model a *miss* pays for.
+
+| Intents | Tier | Why |
+|---|---|---|
+| Lookup, forecast, compare, memory, chat | small (18 of 23) | The model formats data the tool returned |
+| Advice, follow-ups, unknown | large | A judgement the data does not contain, or a reference to resolve |
+| Low confidence, any intent | large | Below the floor we do not trust the label enough for the cheap tier |
+
+The classifier already produced the intent, so routing costs nothing extra —
+no second classification pass.
+
+**Measured 2026-09-04:** the tiers are priced 2× apart ($0.075/$0.30 vs
+$0.15/$0.60 per million tokens, in/out) and are **latency-indistinguishable**
+(507ms vs 549ms p50). So routing is a cost lever only; the latency improvement
+in the results comes from cache hits, not from tier selection.
+
+No escalation path in this build. An escalated request pays both tiers, so it is
+net-negative only when escalation is frequent — break-even at
+`e = 1 − small/large = 50%` at measured rates. Dropped for build budget; the
+binding constraint would be latency rather than cost.
 
 ## 12. Measurement
 
