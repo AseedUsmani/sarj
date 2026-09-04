@@ -43,6 +43,13 @@ def remember(session_id: str, text: str, intent: str, params: dict) -> None:
     _pending[session_id] = Pending(text, intent, dict(params), time.time())
 
 
+def peek(session_id: str) -> bool:
+    """Is a question waiting, without consuming it? The caller may still decide
+    not to resume."""
+    item = _pending.get(session_id)
+    return item is not None and not item.expired
+
+
 def take(session_id: str) -> Optional[Pending]:
     """Returns the deferred question and clears it. Single-shot: a question is
     answered once or not at all."""
