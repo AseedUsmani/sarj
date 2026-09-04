@@ -3,7 +3,7 @@
 A voice assistant for weather, and a semantic cache + model router in front of the
 LLM that powers it.
 
-**Live demo:** TODO — deployed URL
+**Live demo:** <https://sarj-aseed.onrender.com/> — Chrome for voice, typing works anywhere
 **Walkthrough:** TODO — Loom link
 
 ---
@@ -35,15 +35,45 @@ any other paid API.
 
 ## Results
 
-TODO — populated on day 3 from `request_log`:
+Measured 2026-09-04 over 25 requests shaped like real traffic — popular
+questions repeated, asked different ways. `baseline` and `full` are the same
+code one flag apart, so the comparison is not against a remembered number.
 
-| Metric | Baseline | With cache + routing |
+| | baseline | cache + routing |
 |---|---|---|
-| LLM cost per 1,000 requests | TODO | TODO |
-| p50 latency | TODO | TODO |
-| Cache hit rate (of addressable traffic) | 0% | TODO |
-| False-hit rate at shipped threshold | — | TODO |
-| Answer quality vs baseline (judge, n=50) | 1.00 | TODO |
+| LLM cost per 1,000 requests | $0.0734 | **$0.0131** — 82% lower |
+| p50 latency | 671 ms | **5 ms** — 99% lower |
+| Cache hit rate | 0% | **64%** |
+| **False hits** | — | **0** |
+| Tokens consumed | 7,414 | 2,530 |
+
+A cache hit costs ~3 ms and zero tokens, and skips *both* upstreams — the
+weather API and the model. Latency saving comes from both; cost saving is
+entirely the model, since Open-Meteo is free.
+
+**The finding underneath the numbers.** Similarity cannot decide whether two
+questions have the same answer. Measured on real phrasings:
+
+| pair | similarity | same answer? |
+|---|---|---|
+| "weather in Delhi" ~ "How's Delhi looking?" | 0.235 | yes |
+| "weather in Delhi" ~ "weather in **Mumbai**" | 0.794 | **no** |
+| "rain in Delhi **tomorrow**" ~ "…**today**" | 0.801 | **no** |
+
+The distributions overlap: genuine paraphrases score *lower* than
+different-answer pairs, so no threshold separates them. It does not need to —
+parameters go in the cache key, so those pairs land in different namespaces and
+are never compared. **The key does the safety work; the threshold only decides
+whether a phrasing is the same question.**
+
+That is asserted by a test rather than by argument: `tests/test_cache.py` sets
+the similarity threshold to `0.0`, where every entry looks like a perfect match,
+and asserts a request still never receives an entry from another namespace. If
+separation holds at 0.0 it is structural, and no threshold change can introduce
+a cross-parameter false hit.
+
+Full measurements, including the assumptions they overturned, are in
+[docs/FINDINGS.md](docs/FINDINGS.md).
 
 ## Why Open-Meteo
 
@@ -116,13 +146,53 @@ priced 2x apart rather than the ~12x assumed.
 
 ## Running it
 
-TODO — once the service exists:
+```bash
+cp .env.example .env               # add GROQ_API_KEY — nothing else is required
+pip install -r requirements.txt
+./run.sh                           # background, logs to logs/sarjy.log
+```
+
+Open <http://localhost:8000>. Use `localhost`, not the machine IP: the Web Speech
+API only grants microphone access on `localhost` or HTTPS.
+
+`run.sh` starts the service and a watcher that restarts it when git `HEAD` moves,
+so a `git pull` is enough — and it reinstalls dependencies first if
+`requirements.txt` changed.
+
+| | |
+|---|---|
+| `./run.sh` | start (or restart) in the background |
+| `./run.sh status` | pids, current commit, live `/health` |
+| `./run.sh logs` | follow the log |
+| `./run.sh stop` | stop the service and the watcher |
+| `./run.sh foreground` | attached, with `--reload`, no watcher |
+
+No database to provision — SQLite, created at boot. Only `GROQ_API_KEY` is
+required; every other setting has a working default, including the similarity
+threshold, which defaults to the measured value rather than a placeholder.
+
+### Trying the cache
 
 ```bash
-cp .env.example .env        # GROQ_API_KEY, DATABASE_URL
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+curl -X POST localhost:8000/admin/flush          # start cold
 ```
+
+Then ask *"What's the weather in Delhi?"*, then *"How's Delhi looking?"* — the
+second is served from cache. Ask about Mumbai and it misses again, because a
+different parameter is a different namespace.
+
+`/metrics` reports hit rate, routing split, tokens and latency for the run.
+
+### Tests
+
+```bash
+python3 tests/test_classifier.py    # 40 fixtures: intents and entity extraction
+python3 tests/test_cache.py         # 7 checks: keys, isolation, expiry, threshold
+```
+
+`test_cache.py` includes the assertion the design rests on — namespace isolation
+holds with the similarity threshold set to `0.0`, where every entry looks like a
+perfect match. Neither test needs network or a model.
 
 ## Notes and limitations
 
