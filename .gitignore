@@ -16,3 +16,4 @@ venv/
 # runtime
 logs/
 NEXT-loom-script.md
+check-cache.sh

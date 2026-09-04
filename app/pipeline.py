@@ -84,55 +84,126 @@ class PipelineError(RuntimeError):
         self.user_message = errors.message_for(code)
 
 
+@dataclass
+class Outcome:
+    """What answering a question produced. `answer` is None when the tool could
+    not supply data; `error` says why so the caller can phrase it."""
+    answer: Optional[str] = None
+    cached: bool = False
+    error: Optional[str] = None
+
+
+async def _answer(
+    intent: str,
+    params: dict,
+    question: str,
+    facts: dict,
+    mode: str,
+    row,
+    *,
+    force_large: bool = False,
+    city_from_memory: bool = False,
+) -> Outcome:
+    """Cache lookup → tool → route → generate → store.
+
+    **The only path that answers a question.** Both the normal flow and the
+    deferred-question resume call this.
+
+    It exists because they used to be two implementations of the same five
+    steps, and every fix had to be made twice. In practice it was made once:
+    the resume path stored to the cache without looking in it, and reported a
+    hit as a miss. One path, one place to fix.
+    """
+    spec = intents.spec(intent)
+
+    # --- cache lookup -----------------------------------------------------
+    key = None
+    if spec.cacheable and mode == "full" and cache.enabled():
+        key = cache.build_key(classifier.version(), intent, params,
+                              significant=spec.params)
+        row.cache_key = key
+        hit, similarity = cache.lookup(key, question)
+        row.similarity = similarity
+        if hit is not None:
+            return Outcome(answer=hit.answer, cached=True)
+
+    # --- tool -------------------------------------------------------------
+    ttl_seconds = intents.ttl_seconds(intent)
+    tool_context = ""
+    if spec.needs_tool:
+        result = await weather.fetch(
+            params["city"], day=params.get("day", "today"),
+            unit=params.get("unit") or memory.unit(facts))
+        row.tool_called = True
+        if not result.usable:
+            return Outcome(error=result.error or "upstream")
+        tool_context = result.context
+        if result.freshness_seconds:
+            ttl_seconds = result.freshness_seconds
+
+    # --- prompt -----------------------------------------------------------
+    system = BASE_PROMPT
+    if tool_context:
+        system += GROUNDING + "\n\nLive data:\n" + tool_context
+    elif not spec.needs_tool:
+        system += ("\n\nThis turn needs no weather data. Reply "
+                   "conversationally and offer to check the weather.")
+    if city_from_memory and params.get("city"):
+        # Without this the model reads "weather at home", sees a city it was
+        # not told is home, and refuses under the grounding instruction.
+        system += (f"\n\n\"Home\" means {params['city'].title()}. The live "
+                   f"data above is for there.")
+    if facts.get("unit"):
+        system += f"\n\nThe user prefers {facts['unit']}."
+
+    # --- generate ---------------------------------------------------------
+    tier = "large" if (mode == "baseline" or force_large) else spec.tier
+    completion = await llm.complete(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": question}],
+        tier=tier,
+    )
+    row.route = tier
+    row.tokens_in, row.tokens_out = completion.tokens_in, completion.tokens_out
+
+    # --- store ------------------------------------------------------------
+    if key is not None and completion.text:
+        await cache.store_answer(key, question, completion.text, ttl_seconds)
+
+    return Outcome(answer=completion.text)
+
+
 async def _resume(session_id: str, held, city: str, facts: dict,
-                  mode: str, row, trace_id: str) -> Optional[str]:
-    """Answer a question that was deferred while we asked for a location.
+                  mode: str, row, trace_id: str) -> tuple[Optional[str], bool]:
+    """Answer a question deferred while we asked for a location.
 
-    Runs the tool-and-generate part of a turn with the city now known. Returns
-    the answer text, or None if it cannot be produced — in which case the caller
-    falls back to the plain acknowledgement, because a half-answer is worse than
-    none.
+    Thin wrapper over `_answer`: the city is now known, so the same path that
+    handles any other question handles this one. Returns `(answer, from_cache)`,
+    or `(None, False)` if it cannot be produced — in which case the caller falls
+    back to the plain acknowledgement, because a half-answer is worse than none.
 
-    Deliberately not recursive: re-entering `handle` would re-classify, re-check
-    memory intents and could defer again, and a loop is a worse failure than a
-    missing convenience.
+    Deliberately not recursive into `handle`: re-entering would re-classify,
+    re-check memory intents and could defer again, and a loop is a worse failure
+    than a missing convenience.
     """
     spec = intents.spec(held.intent)
     if not spec.needs_tool:
-        return None
+        return None, False
 
     params = dict(held.params)
     params["city"] = city
-    unit = params.get("unit") or memory.unit(facts)
+    row.intent = held.intent
 
     try:
-        result = await weather.fetch(
-            city, day=params.get("day", "today"), unit=unit)
-        row.tool_called = True
-        if not result.usable:
-            return None
-
-        system = BASE_PROMPT + GROUNDING + "\n\nLive data:\n" + result.context
-        # The city here always came from the reply to "where do you live?", so
-        # the model is always told what "home" means.
-        system += (f"\n\n\"Home\" means {city.title()}. The live data above is "
-                   f"for there.")
-        if facts.get("unit"):
-            system += f"\n\nThe user prefers {facts['unit']}."
-
-        tier = "large" if mode == "baseline" else spec.tier
-        completion = await llm.complete(
-            [{"role": "system", "content": system},
-             {"role": "user", "content": held.text}],
-            tier=tier,
-        )
-        row.route = tier
-        row.tokens_in, row.tokens_out = completion.tokens_in, completion.tokens_out
-        row.intent = held.intent
-        return completion.text
+        outcome = await _answer(held.intent, params, held.text, facts, mode, row,
+                                city_from_memory=True)
     except llm.UpstreamError as exc:
         log.warning("resume failed trace=%s: %s", trace_id, exc)
-        return None
+        return None, False
+
+    if outcome.answer is None:
+        return None, False
+    return outcome.answer, outcome.cached
 
 
 async def handle(session_id: str, user_text: str, mode: str,
@@ -149,7 +220,8 @@ async def handle(session_id: str, user_text: str, mode: str,
 
     async def finish(answer: str, route: Optional[str] = None,
                      cached: bool = False, cls=None,
-                     resolved: Optional[dict] = None) -> Answer:
+                     resolved: Optional[dict] = None,
+                     intent: Optional[str] = None) -> Answer:
         # Row is written here, after route and latency are known. Writing it
         # earlier persisted nulls for exactly the columns the evaluation needs.
         row.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -159,7 +231,10 @@ async def handle(session_id: str, user_text: str, mode: str,
         return Answer(
             answer=answer, trace_id=trace_id, route=route, cached=cached,
             latency_ms=row.latency_ms,
-            intent=cls.intent if cls else None,
+            # On a resumed turn this is the deferred question's intent, not the
+            # reply's: "Delhi" classifies as current_weather but what was
+            # answered was the clothing_advice question waiting on it.
+            intent=intent or (cls.intent if cls else None),
             # The *resolved* params, not the classifier's raw output: "should I
             # carry an umbrella today" classifies with no city, and the city
             # comes from memory a moment later. Reporting the raw output made it
@@ -198,10 +273,11 @@ async def handle(session_id: str, user_text: str, mode: str,
             held = pending.take(session_id)
             if held:
                 facts["home_city"] = city
-                resumed = await _resume(
+                resumed, from_cache = await _resume(
                     session_id, held, city, facts, mode, row, trace_id)
                 if resumed:
-                    return await finish(f"{ack} {resumed}", route=row.route, cls=cls)
+                    return await finish(f"{ack} {resumed}", route=row.route,
+                                        cached=from_cache, cls=cls)
             return await finish(ack, cls=cls)
 
         if trusted and cls.intent == "set_units" and cls.params.get("unit"):
@@ -250,107 +326,64 @@ async def handle(session_id: str, user_text: str, mode: str,
             and bool(params.get("city") or not spec.needs_tool)
         )
 
-        # --- 5. cache lookup ---------------------------------------------
-        # Placed after parameter resolution, because the key needs the resolved
-        # city -- "weather at home" only becomes city=dubai here, and that is
-        # what lets a personalised question share an entry with everyone else
-        # asking about that city.
-        #
-        # Placed before the tool call, because that is where the saving is: a
-        # hit skips the tool *and* the model.
-        #
-        # Only in `full` mode, so baseline and router bypass it entirely and the
-        # comparison stays same-code.
-        if row.cacheable and mode == "full" and cache.enabled():
-            row.cache_key = cache.build_key(
-                cls.model_version, cls.intent, params, significant=spec.params)
-            hit, similarity = cache.lookup(row.cache_key, user_text)
-            # Recorded on a miss too: the threshold sweep replays these scores
-            # instead of re-running the workload.
-            row.similarity = similarity
-            if hit is not None:
-                return await finish(hit.answer, cached=True, cls=cls, resolved=params)
-
-        # A horizon the tool cannot serve. Say so rather than answering for
-        # today: wrong advice about next week's trip is worse than a limit.
+        # --- 5. tool eligibility ------------------------------------------
+        # Horizon first: there is no point asking where someone lives for a
+        # question that cannot be answered at any location.
         if params.get("day") == "beyond_forecast":
             return await finish(
                 "I can only check today and tomorrow. Ask me again nearer the "
-                "time and I'll have the forecast.", cls=cls)
+                "time and I'll have the forecast.", cls=cls, resolved=params)
 
-        # --- 6. tool -----------------------------------------------------
-        tool_context = ""
-        # Freshness is owned by the tool that produced the data. Lifted out of
-        # the branch so a cacheable no-tool intent still has a TTL to store with.
-        ttl_seconds = intents.ttl_seconds(cls.intent)
-        if spec.needs_tool:
-            if not params.get("city"):
-                # No city in the request and none stored. Ask for the home city
-                # rather than for "a city": the answer is worth storing, so the
-                # question only ever needs asking once. Hold the question so the
-                # reply that supplies the city can also answer it.
-                pending.remember(session_id, user_text, cls.intent, params)
-                return await finish(ASK_LOCATION, cls=cls)
+        if spec.needs_tool and not params.get("city"):
+            # No city in the request and none stored. Ask for the home city
+            # rather than for "a city": the answer is worth storing, so the
+            # question only ever needs asking once. Hold the question so the
+            # reply that supplies the city can also answer it.
+            pending.remember(session_id, user_text, cls.intent, params)
+            return await finish(ASK_LOCATION, cls=cls, resolved=params)
 
-            result = await weather.fetch(
-                params["city"], day=params.get("day", "today"), unit=unit)
-            row.tool_called = True
-            if not result.usable:
-                # A tool failure is answered honestly, never papered over.
-                msg = ("I couldn't find that place."
-                       if result.error == "unknown_city"
-                       else "I couldn't reach the weather service just now.")
-                return await finish(msg, cls=cls)
-            tool_context = result.context
-            if result.freshness_seconds:
-                ttl_seconds = result.freshness_seconds
-
-            # The tool resolved it, so it is a real place worth remembering.
-            if adopt_as_home:
+        # --- 6. a pending question outranks this turn's literal reading ---
+        # "Delhi" as a reply to "where do you live?" is not a request for
+        # Delhi's weather; it is the missing argument to the question already
+        # asked. Resuming first avoids generating an answer nobody will see:
+        # this turn used to compute current_weather AND the deferred advice,
+        # then show only the second.
+        if adopt_as_home and pending.peek(session_id):
+            held = pending.take(session_id)
+            resumed, from_cache = await _resume(
+                session_id, held, params["city"], facts, mode, row, trace_id)
+            if resumed:
                 await memory.put(owner, "home_city", params["city"])
                 facts["home_city"] = params["city"]
-                held = pending.take(session_id)
-                if held:
-                    resumed = await _resume(
-                        session_id, held, params["city"], facts, mode, row, trace_id)
-                    if resumed:
-                        return await finish(resumed, route=row.route, cls=cls)
+                return await finish(resumed, route=row.route, cached=from_cache,
+                                    cls=cls, resolved=params,
+                                    intent=held.intent)
+            # Resume failed (unknown city, upstream down). Fall through and let
+            # the normal path answer and report the failure honestly.
 
-        # --- 6. route and generate ---------------------------------------
-        # baseline mode ignores routing so the comparison is same-code.
-        tier = "large" if (mode == "baseline" or degrade_tier) else spec.tier
-
-        system = BASE_PROMPT
-        if tool_context:
-            system += GROUNDING + "\n\nLive data:\n" + tool_context
-        elif not spec.needs_tool:
-            system += ("\n\nThis turn needs no weather data. Reply "
-                       "conversationally and offer to check the weather.")
-        if resolved_from_memory:
-            # Without this the model reads "weather at home", sees a city it was
-            # not told is home, and refuses under the grounding instruction.
-            system += (f"\n\n\"Home\" means {params['city'].title()}. The live "
-                       f"data above is for there.")
-        if facts.get("unit"):
-            system += f"\n\nThe user prefers {facts['unit']}."
-
-        completion = await llm.complete(
-            [{"role": "system", "content": system},
-             {"role": "user", "content": user_text}],
-            tier=tier,
+        # --- 7. answer, via the one shared path ---------------------------
+        outcome = await _answer(
+            cls.intent, params, user_text, facts, mode, row,
+            force_large=degrade_tier,
+            city_from_memory=resolved_from_memory,
         )
-        row.tokens_in, row.tokens_out = completion.tokens_in, completion.tokens_out
 
-        # --- 8. store ----------------------------------------------------
-        # Reached only on a successful generation. Every failure path above --
-        # tool failure, missing city, memory intents, upstream error -- returns
-        # before this point, so none of them can be cached. That is structural
-        # rather than a condition that has to remember.
-        if row.cacheable and mode == "full" and cache.enabled() and row.cache_key:
-            await cache.store_answer(
-                row.cache_key, user_text, completion.text, ttl_seconds)
+        if outcome.answer is None:
+            # A tool failure is answered honestly, never papered over.
+            msg = ("I couldn't find that place."
+                   if outcome.error == "unknown_city"
+                   else "I couldn't reach the weather service just now.")
+            return await finish(msg, cls=cls, resolved=params)
 
-        return await finish(completion.text, route=tier, cls=cls, resolved=params)
+        # Adopt only now, after the tool confirmed the place is real: an earlier
+        # version stored it immediately and "weather in Nowherecityxyz" became
+        # the user's permanent home.
+        if adopt_as_home:
+            await memory.put(owner, "home_city", params["city"])
+            facts["home_city"] = params["city"]
+
+        return await finish(outcome.answer, route=row.route,
+                            cached=outcome.cached, cls=cls, resolved=params)
 
     except llm.UpstreamError as exc:
         code = "rate_limited" if exc.rate_limited else "upstream_timeout"
