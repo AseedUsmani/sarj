@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from app import cache, classifier, errors, intents, llm, memory, pending, request_log
+from app.classifier.base import Classification
 from app.config import settings
 from app.tools import weather
 
@@ -41,6 +42,10 @@ BASE_PROMPT = (
 
 # Only applied when the turn is backed by tool data. Applying it to a greeting
 # makes the model apologise for having no weather to report.
+# Turns whose reply ends in "shall I check the weather?" — the prompt below
+# tells the model to offer, so these are the ones an "okay" can be answering.
+OFFERS_WEATHER = {"greeting": True, "thanks": True, "out_of_scope": True}
+
 GROUNDING = (
     "\n\nUse only the data under 'Live data'. Never invent a temperature, "
     "forecast or place. If a detail is not in the data, do not state it."
@@ -288,14 +293,65 @@ async def handle(session_id: str, user_text: str, mode: str,
         if trusted and cls.intent == "recall_fact":
             return await finish(memory.describe(facts), cls=cls)
 
+        # "yes please" after "want me to check the weather?" is an acceptance,
+        # not a question. It carries no content of its own, so the only thing
+        # that can answer it is the offer it replies to.
+        if trusted and cls.intent == "affirm":
+            held = pending.take(session_id)
+            if held:
+                city = held.params.get("city") or memory.home_city(facts)
+                if city:
+                    resumed, from_cache = await _resume(
+                        session_id, held, city, facts, mode, row, trace_id)
+                    if resumed:
+                        return await finish(resumed, route=row.route,
+                                            cached=from_cache, cls=cls,
+                                            intent=held.intent)
+                else:
+                    # Accepted an offer we cannot act on yet. Put the question
+                    # back so the city they give next actually answers it.
+                    pending.remember(session_id, held.text, held.intent,
+                                     held.params)
+                    return await finish(ASK_LOCATION, cls=cls)
+            return await finish(
+                "Sure — which city, and what would you like to know?", cls=cls)
+
+        if trusted and cls.intent == "decline":
+            pending.clear(session_id)
+            return await finish("No problem. Ask me any time.", cls=cls)
+
         # --- 4. resolve --------------------------------------------------
         params = dict(cls.params)
         unit = params.get("unit") or memory.unit(facts)
+        followup_from_memory = False
+
+        # A follow-up is only unanswerable while its subject is unknown. Once a
+        # home city is stored, "and what about tomorrow?" has one — and asking
+        # for a location that was given a turn ago is exactly the repetition
+        # this assistant exists to avoid.
+        #
+        # Re-labelling it to a concrete intent is what makes it cacheable, and
+        # that is safe here precisely because the city is now resolved: the key
+        # carries city and day, so the entry cannot be served to someone whose
+        # previous turn was about somewhere else. That risk belongs to a
+        # follow_up with NO city, which still falls through unchanged.
+        if cls.intent == "follow_up" and not params.get("city"):
+            stored = memory.home_city(facts)
+            if stored:
+                params["city"] = stored
+                resolved_intent = ("forecast_tomorrow"
+                                   if params.get("day") == "tomorrow"
+                                   else "current_weather")
+                cls = Classification(resolved_intent, params, cls.confidence,
+                                     cls.model_version)
+                spec = intents.spec(resolved_intent)
+                row.intent = resolved_intent
+                followup_from_memory = True
 
         # "weather at home", or any weather question with no city, resolves to
         # the stored city. This is also what makes a personalised question share
         # a cache entry with everyone else asking about that city.
-        resolved_from_memory = False
+        resolved_from_memory = followup_from_memory
         if spec.needs_tool and not params.get("city"):
             stored = memory.home_city(facts)
             if stored:
@@ -381,6 +437,14 @@ async def handle(session_id: str, user_text: str, mode: str,
         if adopt_as_home:
             await memory.put(owner, "home_city", params["city"])
             facts["home_city"] = params["city"]
+
+        # A conversational turn is told to "offer to check the weather", so an
+        # offer is what the user just heard. Record it, or the "yes please"
+        # that follows arrives with nothing to attach to and the assistant asks
+        # a question it has already been answered.
+        if OFFERS_WEATHER.get(cls.intent) and not spec.needs_tool:
+            pending.remember(session_id, "What's the weather like?",
+                             "current_weather", {})
 
         return await finish(outcome.answer, route=row.route,
                             cached=outcome.cached, cls=cls, resolved=params)

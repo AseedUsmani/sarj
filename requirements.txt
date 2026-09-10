@@ -5,3 +5,12 @@ sqlalchemy[asyncio]==2.0.36
 aiosqlite==0.20.0
 pydantic==2.10.4
 python-dotenv==1.0.1
+
+# Local speech synthesis. Optional: without it /speak returns 404 and the
+# client falls back to browser speech (losing barge-in — see app/tts.py).
+# Needs a voice model, not shipped here (63 MB):
+#   mkdir -p ~/.local/share/piper-voices && \
+#   B=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/low/en_US-amy-low; \
+#   curl -L -o ~/.local/share/piper-voices/en_US-amy-low.onnx      $B.onnx && \
+#   curl -L -o ~/.local/share/piper-voices/en_US-amy-low.onnx.json $B.onnx.json
+piper-tts==1.8.0

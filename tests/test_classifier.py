@@ -124,3 +124,70 @@ if __name__ == "__main__":
     print(f"\n{'PASS' if not all_failures else 'FAILED'}: "
           f"{total - len(all_failures)}/{total} checks")
     sys.exit(1 if all_failures else 0)
+
+
+# ── spoken acknowledgements ──────────────────────────────────────────────────
+# These only appear once the mic stays open. Nobody types "yeah"; everybody
+# says it. Each one used to be read as a city name, and the geocoder confirmed
+# it — "sure" is Suré in France, "okay" is Okay in Oklahoma, "guess" is
+# Guessing in Austria — so the user was read real weather for a real village
+# they had never named, with no error anywhere to notice.
+ACK_CASES = [
+    ("yes please",     "affirm"),
+    ("yeah",           "affirm"),
+    ("sure",           "affirm"),
+    ("okay",           "affirm"),
+    ("go ahead",       "affirm"),
+    ("sounds good",    "affirm"),
+    ("fine",           "affirm"),
+    ("no",             "decline"),
+    ("nope",           "decline"),
+    ("no thanks",      "decline"),   # matches the thanks rule; is not gratitude
+    ("never mind",     "decline"),
+    ("maybe later",    "decline"),
+    ("thanks!",        "thanks"),    # gratitude keeps its own reply
+    ("thank you",      "thanks"),
+    ("guess",          "unknown"),   # a common word, not Guessing, Austria
+    ("hmm",            "unknown"),
+    ("sorry",          "unknown"),
+]
+
+
+def test_acknowledgements_are_never_places():
+    for text, expected in ACK_CASES:
+        c = classify(text)
+        assert c.intent == expected, f"{text!r} -> {c.intent} (want {expected})"
+        assert "city" not in c.params, f"{text!r} yielded city={c.params.get('city')!r}"
+
+
+# An acknowledgement in front of a real question is agreement plus content.
+# Dropping the tail loses the entire question the user actually asked.
+LEAD_CASES = [
+    ("yes, what about delhi",       "follow_up",       None),
+    ("yeah is it raining in goa",   "rain_now",        "goa"),
+    ("sure, delhi",                 "current_weather", "delhi"),
+    ("okay what's the weather in pune", "current_weather", "pune"),
+]
+
+
+def test_acknowledgement_prefix_keeps_the_question():
+    for text, intent, city in LEAD_CASES:
+        c = classify(text)
+        assert c.intent == intent, f"{text!r} -> {c.intent} (want {intent})"
+        assert c.params.get("city") == city, f"{text!r} -> {c.params}"
+
+
+# Bare place names must still work: ASK_LOCATION promises "or just name a city".
+def test_bare_place_names_still_resolve():
+    for text in ("delhi", "new york", "san francisco"):
+        c = classify(text)
+        assert c.intent == "current_weather", f"{text!r} -> {c.intent}"
+        assert c.params.get("city") == text
+
+
+# Phrasings people speak rather than type when giving a location.
+def test_spoken_location_phrasings():
+    for text in ("my location is Dubai", "I'm based in Dubai", "I stay in Dubai"):
+        c = classify(text)
+        assert c.intent == "set_home_city", f"{text!r} -> {c.intent}"
+        assert c.params.get("city") == "dubai", f"{text!r} -> {c.params}"

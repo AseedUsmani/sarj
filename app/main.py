@@ -6,17 +6,18 @@ that deployment problems and application bugs never arrive together
 """
 import logging
 import os
+import time
 from pathlib import Path
 
 import re
 
 from fastapi import FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import auth, cache, classifier, db, errors, llm, memory, pipeline
+from app import auth, cache, classifier, db, errors, llm, memory, pipeline, tts
 from app.tools import weather
 from app.config import VALID_MODES, settings
 
@@ -39,6 +40,8 @@ async def startup() -> None:
     )
     await db.init()
     await cache.init()
+    # Load the voice now rather than making the first spoken answer pay for it.
+    await tts.warm()
 
 
 @app.on_event("shutdown")
@@ -186,6 +189,33 @@ async def chat(
     return JSONResponse(answer.to_dict())
 
 
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1200)
+
+
+@app.post("/speak")
+async def speak(req: SpeakRequest) -> Response:
+    """The assistant's voice, as audio the browser plays itself.
+
+    This is what makes interruption work. Audio rendered by the page goes into
+    the browser's output mix, which is the reference signal its echo canceller
+    subtracts from the microphone -- so the mic can stay open while Sarjy talks
+    without hearing him. `speechSynthesis` cannot be used for this: it plays
+    through the OS, outside that mix, leaving AEC nothing to reference.
+
+    404 rather than 500 when synthesis is unavailable: it is an enhancement,
+    and the client falls back to browser speech on a miss.
+    """
+    audio = await tts.synthesize(req.text)
+    if audio is None:
+        return _error(404, "tts_unavailable", "Speech synthesis is not available.")
+    return Response(
+        content=audio,
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     """Readiness probe and keep-warm target (TDD §13).
@@ -204,14 +234,31 @@ async def health() -> JSONResponse:
                 "classifier": classifier.status(),
                 "weather": await weather.status(),
                 "cache": cache.status(),
+                "tts": tts.status(),
             },
         }
     )
 
 
+INDEX_PATH = STATIC_DIR / "index.html"
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def index() -> HTMLResponse:
+    """The client, served uncached and stamped with its build.
+
+    Both matter for a voice UI. Without no-store the browser happily serves a
+    heuristically cached copy, so a fix appears not to have taken effect and
+    the next debugging round is spent on the wrong version of the code. The
+    stamp is how you tell from the page itself which version you are looking
+    at -- it is the file's own mtime, so it changes exactly when the file does.
+    """
+    html = INDEX_PATH.read_text(encoding="utf-8")
+    build = time.strftime("%H:%M:%S", time.localtime(INDEX_PATH.stat().st_mtime))
+    return HTMLResponse(
+        content=html.replace("__BUILD__", build),
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
