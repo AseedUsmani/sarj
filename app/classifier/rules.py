@@ -12,7 +12,7 @@ from typing import Optional
 
 from app.classifier.base import Classification
 
-VERSION = "rules-v1"
+VERSION = "rules-v2"   # v2: acknowledgements, offer resume, filler-word place guard
 
 # Words that follow "in/for/at" but are never places.
 _NOT_A_PLACE = {
@@ -32,6 +32,60 @@ _PLACE = re.compile(
 )
 _COMPARE = re.compile(r"\b(?:compare|versus|vs\.?|or)\b", re.I)
 
+# Bare acknowledgements. These matter far more in a hands-free conversation
+# than a typed one: nobody types "yeah", but everybody says it. They must never
+# reach the place extractor -- "sure" geocodes to Suré in France, "okay" to
+# Okay in Oklahoma and "guess" to Guessing in Austria, all real places, so the
+# geocoder cannot reject them and the user is read plausible weather for a
+# village they have never heard of.
+_AFFIRM_WORDS = {
+    "yes", "yeah", "yep", "yup", "yah", "ya", "sure", "ok", "okay", "okey",
+    "alright", "right", "correct", "affirmative", "absolutely", "definitely",
+    "certainly", "please", "go", "ahead", "do", "it", "that", "would", "be",
+    "great", "good", "nice", "cool", "fine",
+    "sounds", "sound", "let's", "lets", "why", "not", "of", "course",
+}
+_DECLINE_WORDS = {
+    "no", "nope", "nah", "naw", "negative", "don't", "dont", "do", "not",
+    "never", "mind", "nevermind", "stop", "cancel", "forget", "it", "that",
+    "leave", "skip", "later", "maybe",
+}
+# "no thanks" is a decline, not a thanks; checked before the thanks rule.
+_AFFIRM_HEAD = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|ok|okay|alright|absolutely|definitely|"
+    r"please do|go ahead|why not|sounds good)\b", re.I)
+_DECLINE_HEAD = re.compile(
+    r"^\s*(?:no|nope|nah|not now|never mind|nevermind|don'?t|stop|cancel|"
+    r"forget it|maybe later)\b", re.I)
+
+
+# Ordinary English words that a geocoder happily resolves to a real village.
+# A bare one-word turn is only treated as a place when it is NOT one of these:
+# being wrong here is silent, and reads out confident weather for the wrong
+# continent.
+_COMMON_WORDS = {
+    "guess", "why", "what", "who", "when", "where", "how", "hmm", "huh",
+    "wait", "hold", "on", "sorry", "pardon", "again", "repeat", "hello",
+    "hi", "hey", "bye", "goodbye", "test", "testing", "help", "more",
+    "less", "same", "other", "another", "next", "back", "done", "ready",
+    "still", "really", "true", "false", "some", "any", "many", "much",
+    "well", "so", "then", "now", "here", "there", "everywhere", "nothing",
+    "something", "anything", "everything", "someone", "anyone", "everyone",
+    "man", "boy", "girl", "friend", "buddy", "mate", "dude", "sir",
+    "speak", "speaking", "talk", "listen", "hear", "say", "said", "tell",
+    "know", "think", "mean", "sorry", "please", "kind", "kinda", "sort",
+}
+
+
+def _all_in(text: str, vocab: set) -> bool:
+    """Is the whole turn drawn from this vocabulary and nothing else?
+
+    Whole-turn, not a prefix: "yes, and what about Delhi" carries a real
+    question after the "yes" and must not be swallowed as a bare acknowledgement.
+    """
+    toks = re.findall(r"[A-Za-z']+", text.lower())
+    return bool(toks) and len(toks) <= 5 and all(t in vocab for t in toks)
+
 _RULES: list[tuple[str, re.Pattern]] = [
     # Follow-ups first. They are meaningful only against the previous turn, so
     # misclassifying one as a cacheable lookup is a correctness bug, not a
@@ -47,8 +101,10 @@ _RULES: list[tuple[str, re.Pattern]] = [
 
     # memory — these are commands, not questions
     ("set_home_city", re.compile(
-        r"\b(?:my home (?:city|town) is|i live in|i am (?:in|from)|i'm (?:in|from)|"
-        r"set (?:my )?home (?:city|town) (?:to|as)|remember (?:that )?i live in)\b", re.I)),
+        r"\b(?:my (?:home|location|city|town) (?:city|town)? ?is|i live in|"
+        r"i am (?:in|from|based in)|i'm (?:in|from|based in)|i stay in|"
+        r"set (?:my )?home (?:city|town) (?:to|as)|remember (?:that )?i live in|"
+        r"i'?m located in)\b", re.I)),
     ("set_units", re.compile(
         r"\b(?:use|switch to|in|prefer)\s+(celsius|fahrenheit|centigrade)\b", re.I)),
     ("recall_fact", re.compile(
@@ -204,7 +260,10 @@ _ASKING_ADVICE = re.compile(
     re.I)
 
 _SET_HOME = re.compile(
-    r"\b(?:home (?:city|town)\s+(?:to|as|is)|i live in|i'm in|i am in|i'm from|i am from)\s+"
+    r"\b(?:home (?:city|town)\s+(?:to|as|is)"
+    r"|my (?:location|city|town)\s+is"
+    r"|i live in|i stay in|i'm in|i am in|i'm from|i am from"
+    r"|i'?m (?:based|located) in)\s+"
     r"([A-Za-z][A-Za-z\s.'-]{1,38}?)(?=\s*(?:[?,.!]|$))", re.I)
 
 # "at home", "my home town" — resolves from stored facts, not a place name
@@ -284,6 +343,17 @@ class RuleClassifier:
         if not t:
             return Classification("unknown", {}, 0.0, self.version)
 
+        # Strip a leading acknowledgement when real content follows, and read
+        # the content. Spoken replies lead with "yeah" constantly, and the
+        # words before the comma are not the request.
+        lead = _AFFIRM_HEAD.match(t)
+        if lead and not _all_in(t, _AFFIRM_WORDS):
+            rest = t[lead.end():].lstrip(" ,.!-")
+            if rest:
+                inner = self.classify(rest)
+                if inner.intent != "unknown":
+                    return inner
+
         intent = "unknown"
         confidence = 0.3
         for name, pattern in _RULES:
@@ -304,16 +374,35 @@ class RuleClassifier:
                 and _HOME.search(t):
             intent = "weather_at_home"
 
+        # Acknowledgements are resolved before anything else can read them as
+        # content. A decline is checked first: "no thanks" matches the thanks
+        # rule above, and answering "you're welcome!" to a refusal is wrong.
+        if _all_in(t, _DECLINE_WORDS) or _DECLINE_HEAD.match(t):
+            return Classification("decline", {}, 0.9, self.version)
+        if intent == "unknown" and _all_in(t, _AFFIRM_WORDS):
+            return Classification("affirm", {}, 0.9, self.version)
+
         # A bare place name is a weather question. Sarjy asks "where do you
         # live? ... or just name a city", so the reply is often one or two
         # words with no weather vocabulary at all. Confidence stays low: if it
         # is not really a place the geocoder says so, and low confidence keeps
         # it out of the cache either way.
+        #
+        # The geocoder is a weaker guard than it looks: enough short English
+        # filler words are also real settlements ("sure" -> Suré, France;
+        # "okay" -> Okay, Oklahoma; "guess" -> Guessing, Austria) that a
+        # lookup SUCCEEDS and the user is confidently read the weather for a
+        # village they never named. Spoken input produces these constantly, so
+        # the vocabulary check has to happen here rather than downstream.
         if intent == "unknown":
             toks = [w for w in re.findall(r"[A-Za-z']+", t)]
-            if 1 <= len(toks) <= 3 and all(_is_place_token(w.lower()) for w in toks):
+            lowered = [w.lower() for w in toks]
+            if (1 <= len(toks) <= 3
+                    and all(_is_place_token(w) for w in lowered)
+                    and not any(w in _AFFIRM_WORDS or w in _DECLINE_WORDS
+                                or w in _COMMON_WORDS for w in lowered)):
                 return Classification(
-                    "current_weather", {"city": " ".join(w.lower() for w in toks)},
+                    "current_weather", {"city": " ".join(lowered)},
                     0.5, self.version)
 
         # Last-resort fallback. A question that is clearly weather-adjacent must

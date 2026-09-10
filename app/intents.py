@@ -75,6 +75,13 @@ REGISTRY: dict[str, IntentSpec] = {s.name: s for s in [
 
     # --- conversational: no tool, cacheable because the answer is fixed -----
     _s("greeting",   (), ttl="static", tool=False),
+
+    # --- acknowledgements: meaningful only against the offer they answer -----
+    #     Uncacheable by construction: "yes" resolves to whatever was offered,
+    #     so caching one answer under it would serve it to the next "yes".
+    _s("affirm",  (), cacheable=False, ttl="none", tool=False),
+    _s("decline", (), cacheable=False, ttl="none", tool=False),
+
     _s("thanks",     (), ttl="static", tool=False),
     _s("out_of_scope", (), ttl="static", tool=False),
 

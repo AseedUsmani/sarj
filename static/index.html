@@ -105,7 +105,10 @@
   .mic{width:44px;height:44px;flex:none;border-radius:50%;display:grid;place-items:center;
        background:var(--panel-2);border:1px solid var(--line);padding:0}
   .mic:hover{border-color:var(--accent)}
-  .mic.on{background:var(--accent);border-color:transparent}
+  .mic.on{background:var(--accent);border-color:transparent;
+         animation:micLive 1.6s ease-in-out infinite}
+  @keyframes micLive{0%,100%{box-shadow:0 0 0 0 rgba(94,234,212,.45)}
+                     70%{box-shadow:0 0 0 9px rgba(94,234,212,0)}}
   .mic svg{width:19px;height:19px;stroke:var(--text);fill:none;stroke-width:1.9;
            stroke-linecap:round;stroke-linejoin:round}
   .mic.on svg{stroke:#06231f}
@@ -170,7 +173,7 @@
       </div>
     </div>
     <form class="composer" id="form">
-      <button type="button" class="mic" id="mic" title="Speak">
+      <button type="button" class="mic" id="mic" title="Start a conversation" aria-pressed="false">
         <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
       </button>
       <input type="text" id="text" placeholder="Ask about the weather…" autocomplete="off">
@@ -186,16 +189,23 @@
   </div>
 
   <div class="foot">
-    <span id="note">Voice needs Chrome. Typing works everywhere.</span>
+    <span id="note">Tap the mic once, then just talk — you can cut in while I'm speaking. Headphones work best.</span>
     <span class="spacer"></span>
     <a href="/metrics" target="_blank">metrics</a>
     <a href="/health" target="_blank">health</a>
     <span id="sid"></span>
+    <span id="build">build __BUILD__</span>
   </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
+
+// Open the page with ?debug=1 to trace the voice loop in the console. Voice
+// bugs are hard to report without this: everything interesting happens in
+// under a second and leaves no trace in the UI.
+const DEBUG = new URLSearchParams(location.search).has('debug');
+const dbg = (...a) => { if (DEBUG) console.log('[sarjy]', ...a); };
 const log = $('log');
 let busy = false, turns = 0, hits = 0;
 
@@ -215,10 +225,30 @@ const authHeaders = () => token ? {'Authorization':'Bearer ' + token} : {};
 /* ── ui state ─────────────────────────────────────────── */
 function setState(s, label){
   $('orb').className = 'orb' + (s ? ' ' + s : '');
+  const mic = $('mic');
+  if (mic && typeof convo !== 'undefined' && convo)
+    mic.title = (s === 'speaking' || s === 'thinking')
+      ? 'Interrupt and speak' : 'End the conversation';
   $('state').textContent = label || s || 'ready';
   const dot = $('dot');
   dot.className = 'dot' + (s === 'speaking' || s === 'listening' ? ' ok' : s === 'error' ? ' err' : '');
 }
+
+// The resting state, which is not the same thing inside a conversation as
+// outside one. Chrome ends recognition every few seconds on its own and we
+// restart it; showing 'ready' in that gap made the header flicker between
+// 'listening' and 'ready' continuously, which read as a bug in the mic.
+function render(){
+  // Derived, never assigned from the middle of an event handler. The header
+  // flickering between 'listening' and 'ready' was several handlers each
+  // setting what they thought the state was, at different moments in the
+  // recognition restart cycle. There is one answer and this computes it.
+  if (busy)          return setState('thinking','thinking');
+  if (speaking)      return setState('speaking','speaking');
+  if (convo)         return setState('listening','listening');
+  setState('','ready');
+}
+const idleState = render;
 
 function addRow(who, text, cls){
   const empty = log.querySelector('.empty'); if (empty) empty.remove();
@@ -255,45 +285,168 @@ function updateStats(d){
   $('s-intent').textContent = d.intent || '—';
 }
 
-function speak(text){
-  if (!('speechSynthesis' in window)) return;
+/* ── the assistant's voice ─────────────────────────────
+   /speak returns audio the page plays. Browser speech is the fallback when
+   the server has no voice installed.
+
+   The microphone is NOT held open while this plays. An earlier version kept a
+   getUserMedia stream running for the whole conversation, to measure the room
+   and detect someone talking over the answer. That stream competes with Web
+   Speech's own capture — recognition stopped getting the microphone at all,
+   which broke plain listening, which is far more important than being
+   interruptible by voice. Recognition owns the microphone; nothing else takes
+   it. Interrupting is the mic button, which always works.
+   ─────────────────────────────────────────────────── */
+let ttsMode = 'unknown';        // unknown | server | browser
+let speaking = false;
+let audioEl = null, audioUrl = null;
+
+function stopAudio(){
+  if (!audioEl) return;
+  audioEl.pause();
+  audioEl.currentTime = 0;
+}
+
+function releaseAudioUrl(){
+  if (audioUrl){ URL.revokeObjectURL(audioUrl); audioUrl = null; }
+}
+
+async function speak(text, done){
+  // Exactly one path out of here, however speaking ends. Every early return
+  // below goes through it: a missed finish leaves `speaking` set, and nothing
+  // else clears it, so the mic never reopens and the conversation is over.
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    speaking = false;
+    releaseAudioUrl();
+    idleState();
+    if (done) done();
+  };
+
+  // The mic is closed for the whole answer: recognition would otherwise
+  // transcribe it, and its capture has no echo cancellation we can reach.
+  if (listening) { try { recog.stop(); } catch {} }
+
+  if (ttsMode !== 'browser'){
+    try{
+      const r = await fetch('/speak',{
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ text }),
+      });
+      if (r.ok){
+        if (ttsMode !== 'server'){ ttsMode = 'server'; dbg('using server audio'); }
+        releaseAudioUrl();
+        audioUrl = URL.createObjectURL(await r.blob());
+        if (!audioEl) audioEl = new Audio();
+        audioEl.src = audioUrl;
+        audioEl.onended = finish;
+        audioEl.onerror = finish;
+        speaking = true;
+        render();
+        try{
+          await audioEl.play();
+        }catch(err){
+          dbg('audio.play rejected', err.name);
+          speaking = false;
+          ttsMode = 'browser';
+          speakInBrowser(text, finish);
+        }
+        return;
+      }
+      if (r.status === 404) ttsMode = 'browser';   // no voice installed
+    }catch(err){
+      dbg('/speak failed', err.name);              // fall back for this turn
+    }
+  }
+
+  speakInBrowser(text, finish);
+}
+
+function speakInBrowser(text, finish){
+  if (!('speechSynthesis' in window)) { finish(); return; }
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.rate = 1.05;
-  u.onstart = () => setState('speaking','speaking');
-  u.onend   = () => setState('','ready');
+  u.onstart = () => { speaking = true; render(); };
+  u.onend = finish;
+  // Chrome drops utterances silently often enough that a loop waiting on
+  // onend alone can stall forever. onerror has to resume it too.
+  u.onerror = finish;
   speechSynthesis.speak(u);
+  // speechSynthesis can refuse without firing either handler. Nothing else
+  // would reopen the mic, so guarantee it.
+  setTimeout(() => { if (!speaking) finish(); }, 1500);
+}
+
+// Cut the answer off, from the mic button or a stop request.
+function bargeIn(){
+  if (!speaking && !busy) return false;
+  speaking = false;
+  stopAudio();
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  return true;
 }
 
 /* ── asking ───────────────────────────────────────────── */
+// A new question supersedes whatever is in flight. Interrupting is only real
+// if the answer you interrupted actually goes away: without this, barging in
+// mid-sentence still let the abandoned request come back and start speaking
+// over the question that replaced it.
+let inflight = null, turnSeq = 0;
+
 async function ask(text){
-  if (busy) return;
+  bargeIn();
+  if (inflight) inflight.abort();
+  const seq = ++turnSeq;
+  const ctrl = new AbortController();
+  inflight = ctrl;
+
   busy = true;
   addRow('me', text);
   const pending = addRow('bot','…','pending');
-  setState('thinking','thinking');
+  render();
+
+  // A superseded turn must not touch the UI, the stats or the speaker. It
+  // lost the race; the only thing it is still allowed to do is clean up.
+  const stale = () => seq !== turnSeq;
+
   try{
     const res = await fetch('/chat',{
       method:'POST',
       headers:{'content-type':'application/json', ...authHeaders()},
-      body: JSON.stringify({session_id: sessionId, text})
+      body: JSON.stringify({session_id: sessionId, text}),
+      signal: ctrl.signal,
     });
     const d = await res.json();
     pending.remove();
+    if (stale()) return;
     if(!res.ok){
       addRow('bot', d.error?.message || 'Request failed', 'error');
       setState('error','error');
+      busy = false;
+      resumeListening();
       return;
     }
     const row = addRow('bot', d.answer);
     addMeta(row, d);
     updateStats(d);
-    speak(d.answer);
-  }catch{
+    busy = false;
+    speak(d.answer, resumeListening);
+  }catch(err){
     pending.remove();
+    // An abort is this turn being replaced on purpose, not a failure. The
+    // turn that replaced it owns the UI now, so say nothing.
+    if (err.name === 'AbortError' || stale()) return;
     addRow('bot','Could not reach the server.','error');
     setState('error','error');
-  }finally{ busy = false; }
+    busy = false;
+    resumeListening();
+  }finally{
+    if (inflight === ctrl) inflight = null;
+    if (!stale()) busy = false;
+  }
 }
 
 $('form').addEventListener('submit', e => {
@@ -373,33 +526,178 @@ $('signOut').addEventListener('click', () => {
 });
 refreshWho();
 
-/* ── voice ────────────────────────────────────────────── */
+/* ── voice ────────────────────────────────────────────
+   Hands-free: the mic button opens a conversation, it does not capture a
+   single utterance. Once on, recognition is torn down while Sarjy thinks and
+   speaks — the laptop speaker is loud enough to feed the mic its own answer —
+   and started again the moment the answer finishes. The button stays on until
+   the user turns it off (or says a stop word).
+   ─────────────────────────────────────────────────── */
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const mic = $('mic');
-let recog = null, listening = false;
+let recog = null, listening = false, convo = false;
+
+// Recognition ends on its own after a stretch of silence. In a conversation
+// that is not the end of the conversation, so onend restarts it — but a tight
+// restart loop against a broken mic would spin, so failures back off.
+let restartTimer = null, failures = 0;
+
+// A session that starts and dies immediately never heard anything. That is
+// not the ordinary silence timeout — it means something else holds the
+// microphone (another tab of this page, or another app). Retrying every 250ms
+// forever just hammers a device that is not going to be free, and says
+// nothing, so count them and give up loudly.
+let sessionStartedAt = 0, deadStarts = 0, sessionErrored = false;
+const DEAD_START_MS = 700;
+const DEAD_STARTS_BEFORE_GIVING_UP = 5;
+
+// Set when recognition is wanted back RIGHT NOW — the user has started talking
+// over the answer. recog.stop() is asynchronous, so a start() issued during
+// the barge-in usually throws and the real restart happens in onend; without
+// this it would wait out the ordinary 250ms and clip their first word.
+let restartNow = false;
+let lastRecogError = '';
+
+const stopWords = /^(stop|stop listening|that's all|thats all|goodbye|bye|thank you sarjy|exit|quit|nevermind|never mind)[.!]?$/i;
+
+function startRecog(){
+  if (!recog || listening || !convo) return;
+  clearTimeout(restartTimer); restartTimer = null;
+  try { recog.start(); restartNow = false; }
+  catch { /* still stopping — onend restarts it, immediately if asked */ }
+}
+
+function resumeListening(){
+  if (!convo) return;
+  // A beat of delay lets speechSynthesis actually release the audio device
+  // before the mic opens, otherwise the tail of the answer is transcribed.
+  clearTimeout(restartTimer);
+  restartTimer = setTimeout(startRecog, 350);
+}
+
+function endConversation(msg){
+  convo = false;
+  clearTimeout(restartTimer); restartTimer = null;
+  mic.classList.remove('on');
+  mic.setAttribute('aria-pressed','false');
+  mic.title = 'Start a conversation';
+  if (recog && listening) { try { recog.stop(); } catch {} }
+  if (msg) $('note').textContent = msg;
+  render();
+}
+
+function beginConversation(){
+  if (convo) return;
+  convo = true; failures = 0; deadStarts = 0;
+  mic.classList.add('on');
+  mic.setAttribute('aria-pressed','true');
+  mic.title = 'End the conversation';
+  $('note').textContent = 'Listening — just talk. Tap the mic to interrupt me. Say "stop" to end.';
+  if ('speechSynthesis' in window) speechSynthesis.cancel();   // barge in
+  startRecog();
+}
 
 if(!SR){
   mic.disabled = true;
   $('note').textContent = 'This browser has no Web Speech API — use the text box, or open in Chrome.';
 }else{
   recog = new SR();
-  recog.lang = 'en-US'; recog.interimResults = false; recog.continuous = false;
-  recog.onstart  = () => { listening = true; mic.classList.add('on'); setState('listening','listening'); };
-  recog.onresult = e => ask(e.results[0][0].transcript.trim());
-  recog.onerror  = e => {
-    $('note').textContent = e.error === 'not-allowed'
-      ? 'Microphone permission denied — typing still works.'
-      : 'Speech error: ' + e.error;
-    setState('','ready');
+  recog.lang = 'en-US';
+  recog.continuous = true;      // keep the stream open across pauses
+  recog.interimResults = false; // only completed utterances are acted on
+
+  recog.onstart = () => {
+    dbg('recog.onstart');
+    sessionStartedAt = Date.now();
+    sessionErrored = false;
+    listening = true; failures = 0;
+    render();
   };
-  recog.onend = () => { listening = false; mic.classList.remove('on');
-                        if(!busy) setState('','ready'); };
+
+  recog.onresult = e => {
+    let final = '';
+    for (let i = e.resultIndex; i < e.results.length; i++){
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+    }
+    final = final.trim();
+    dbg('heard', JSON.stringify(final));
+    deadStarts = 0;              // the microphone is genuinely ours
+    if (!final) return;
+
+    if (stopWords.test(final)){
+      addRow('me', final);
+      endConversation('Conversation ended. Tap the mic to start another.');
+      return;
+    }
+    ask(final);
+  };
+
+  recog.onerror = e => {
+    lastRecogError = e.error;
+    dbg('recog.onerror', e.error);
+    // 'no-speech' is a quiet user, which is not a fault. Anything else means
+    // this session did not work.
+    if (e.error !== 'no-speech') sessionErrored = true;
+    if (e.error === 'no-speech' || e.error === 'aborted') return;  // onend handles it
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+      endConversation('Microphone permission denied — typing still works.');
+      return;
+    }
+    failures++;
+    $('note').textContent = 'Speech error: ' + e.error;
+  };
+
+  recog.onend = () => {
+    const lived = Date.now() - sessionStartedAt;
+    dbg('recog.onend', {convo, busy, speaking, failures, lived});
+    listening = false;
+    if (!convo){ mic.classList.remove('on'); render(); return; }
+    if (failures >= 4){
+      endConversation('Speech recognition keeps failing — typing still works.');
+      return;
+    }
+
+    // Died on arrival AND reported a fault: the microphone is not actually
+    // available to us. Silence alone must never count — Chrome ends a session
+    // quickly when nobody speaks, and counting that would hang up on a user
+    // who is simply thinking.
+    if (sessionErrored && lived < DEAD_START_MS) deadStarts++; else deadStarts = 0;
+    if (deadStarts >= DEAD_STARTS_BEFORE_GIVING_UP){
+      endConversation('Something else is using the microphone — usually another '
+        + 'tab of this page. Close it, then tap the mic to try again.');
+      return;
+    }
+
+    // Don't let a previously scheduled restart survive alongside this one:
+    // two pending timers means two start() calls, and the second aborts the
+    // session the first just opened.
+    clearTimeout(restartTimer);
+    idleState();
+    const delay = failures ? 800 * failures : (restartNow ? 0 : 250);
+    restartNow = false;
+    restartTimer = setTimeout(startRecog, delay);
+  };
+
+  // While Sarjy is talking or thinking, the button interrupts rather than
+  // hanging up — on a speaker it is the only reliable way to cut in, and
+  // ending the conversation is never what someone means mid-answer.
   mic.addEventListener('click', () => {
-    if(listening){ recog.stop(); return; }
-    if('speechSynthesis' in window) speechSynthesis.cancel();  // barge in
-    try{ recog.start(); }catch{}
+    if (!convo){ beginConversation(); return; }
+    if (speaking || busy){
+      if (inflight) inflight.abort();
+      bargeIn();
+      render();
+      restartNow = true;
+      startRecog();
+      return;
+    }
+    endConversation();
   });
 }
+
+// Typing mid-conversation should not fight the mic for the turn.
+$('text').addEventListener('focus', () => { if (listening) { try { recog.stop(); } catch {} } });
+
 </script>
 </body>
 </html>
